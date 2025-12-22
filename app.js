@@ -1,8 +1,10 @@
 const PROCESS_CODES = [
-  { code: "P01", label: "Check-In" },
-  { code: "P02", label: "Sicherheitskontrolle" },
-  { code: "P03", label: "Boarding" },
-  { code: "P04", label: "Gepäckabfertigung" },
+  { code: "P01", label: "Check-In", directions: ["departure", "arrival"] },
+  { code: "P02", label: "Sicherheitskontrolle", directions: ["departure"] },
+  { code: "P03", label: "Boarding", directions: ["departure"] },
+  { code: "P04", label: "Gepäckabfertigung", directions: ["arrival", "departure"] },
+  { code: "P05", label: "Ankunftsbus", directions: ["arrival"] },
+  { code: "P06", label: "Passkontrolle", directions: ["arrival"] },
 ];
 
 const STORAGE_KEY = "mucsim_logger_state";
@@ -13,8 +15,19 @@ const DEFAULT_STATE = {
     direction: "",
     stand: "",
     gate: "",
+    airport: "",
+    from_airport: "",
+    to_airport: "",
+    airline_code: "",
   },
   observer_id: "",
+  location: {
+    latitude: "",
+    longitude: "",
+    accuracy: "",
+    timestamp: "",
+  },
+  activeProcesses: {},
   events: [],
 };
 
@@ -84,6 +97,105 @@ function setObserver(value) {
   persistState();
 }
 
+function promptForAirport() {
+  const airport = window.prompt("Bitte IATA-Code des Flughafens eingeben (z.B. MUC):", state.currentFlight.airport || "");
+  if (airport != null && airport.trim()) {
+    setCurrentFlight("airport", airport.trim().toUpperCase());
+    setFeedback("Airport gesetzt.");
+  } else {
+    setFeedback("Kein Airport gesetzt. Bitte manuell nachtragen.");
+  }
+}
+
+function setLocation({ latitude, longitude, accuracy, timestamp }) {
+  state = {
+    ...state,
+    location: {
+      latitude: latitude ?? "",
+      longitude: longitude ?? "",
+      accuracy: accuracy ?? "",
+      timestamp: timestamp ?? "",
+    },
+  };
+  persistState();
+  updateLocationUi();
+}
+
+function resetLocation() {
+  setLocation({ latitude: "", longitude: "", accuracy: "", timestamp: "" });
+}
+
+function requestLocation(isInitial = false) {
+  const button = document.getElementById("location-button");
+  if (!navigator.geolocation) {
+    setFeedback("GPS wird vom Browser nicht unterstützt.");
+    if (isInitial && !state.currentFlight.airport) {
+      promptForAirport();
+    }
+    return;
+  }
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Hole GPS...";
+  }
+
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      const { latitude, longitude, accuracy } = position.coords;
+      const timestamp = new Date(position.timestamp).toISOString();
+      setLocation({
+        latitude: latitude?.toFixed(6),
+        longitude: longitude?.toFixed(6),
+        accuracy: accuracy != null ? Math.round(accuracy) : "",
+        timestamp,
+      });
+      setFeedback("GPS aktualisiert.");
+      if (button) {
+        button.disabled = false;
+        button.textContent = "GPS aktualisieren";
+      }
+    },
+    (error) => {
+      console.warn("GPS Fehler", error);
+      setFeedback("GPS konnte nicht abgefragt werden.");
+      if (isInitial && !state.currentFlight.airport) {
+        promptForAirport();
+      }
+      if (button) {
+        button.disabled = false;
+        button.textContent = "GPS aktualisieren";
+      }
+    },
+    { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+  );
+}
+
+function updateLocationUi() {
+  const coordinates = document.getElementById("location-coordinates");
+  const accuracy = document.getElementById("location-accuracy");
+  const timestamp = document.getElementById("location-timestamp");
+
+  if (coordinates) {
+    if (state.location.latitude && state.location.longitude) {
+      coordinates.textContent = `${state.location.latitude}, ${state.location.longitude}`;
+    } else {
+      coordinates.textContent = "–";
+    }
+  }
+
+  if (accuracy) {
+    accuracy.textContent = `Genauigkeit: ${state.location.accuracy ? `${state.location.accuracy} m` : "–"}`;
+  }
+
+  if (timestamp) {
+    const timeLabel = state.location.timestamp
+      ? new Date(state.location.timestamp).toLocaleString()
+      : "–";
+    timestamp.textContent = `Aktualisiert: ${timeLabel}`;
+  }
+}
+
 function setFeedback(message) {
   const feedback = document.getElementById("feedback");
   if (feedback) {
@@ -106,6 +218,7 @@ function highlightMissingFields(missingFields) {
   const fieldIdMap = {
     flight_no: "flight-no",
     direction: "flight-direction",
+    airport: "airport-code",
   };
 
   missingFields.forEach((field) => {
@@ -118,16 +231,37 @@ function highlightMissingFields(missingFields) {
   });
 }
 
+function setActiveProcess(processCode, startedAt) {
+  state = {
+    ...state,
+    activeProcesses: { ...state.activeProcesses, [processCode]: startedAt ?? new Date().toISOString() },
+  };
+  persistState();
+  const app = document.getElementById("app");
+  if (app) renderProcessCards(app);
+}
+
+function clearActiveProcess(processCode) {
+  if (!state.activeProcesses?.[processCode]) return;
+  const { [processCode]: _removed, ...rest } = state.activeProcesses;
+  state = { ...state, activeProcesses: rest };
+  persistState();
+  const app = document.getElementById("app");
+  if (app) renderProcessCards(app);
+}
+
 function getMissingRequiredFields(eventPayload) {
   const missing = [];
 
   const flightNo = eventPayload.flight_no ?? state.currentFlight.flight_no;
   const direction = eventPayload.direction ?? state.currentFlight.direction;
+  const airport = eventPayload.airport ?? state.currentFlight.airport;
 
   if (!eventPayload.process_code) missing.push("process_code");
   if (!eventPayload.event_type) missing.push("event_type");
   if (!flightNo) missing.push("flight_no");
   if (!direction) missing.push("direction");
+  if (!airport) missing.push("airport");
 
   return missing;
 }
@@ -141,28 +275,54 @@ function addEvent(eventPayload) {
       event_type: "Aktion",
       flight_no: "Flugnummer",
       direction: "Richtung",
+      airport: "Airport",
     };
     const missingLabels = missingFields.map((field) => labels[field] || field).join(", ");
     highlightMissingFields(missingFields);
     setFeedback(`Bitte Pflichtfelder ausfüllen: ${missingLabels}`);
-    return;
+    return false;
   }
 
   const now = new Date();
   const eventTimestamp = now.toISOString();
   const disruptionFlag = eventPayload.disruption_flag ?? (eventPayload.disruption_type && eventPayload.disruption_type !== "none");
+  const isStart = eventPayload.event_type === "start";
+  const isEnd = eventPayload.event_type === "end";
 
+  const startTimeAbs = isStart
+    ? eventTimestamp
+    : state.activeProcesses[eventPayload.process_code] || "";
+  const endTimeAbs = isEnd ? eventTimestamp : "";
+
+  const durationMin =
+    startTimeAbs && endTimeAbs ? Number(((new Date(endTimeAbs) - new Date(startTimeAbs)) / 60000).toFixed(2)) : "";
+
+  const timeSlot = startTimeAbs
+    ? `${String(new Date(startTimeAbs).getHours()).padStart(2, "0")}-${String(
+        (new Date(startTimeAbs).getHours() + 1) % 24
+      ).padStart(2, "0")}`
+    : "";
+
+  const airportCode = (eventPayload.airport ?? state.currentFlight.airport ?? "").toUpperCase();
   const event = {
     log_id: `${now.getTime()}-${state.events.length + 1}`,
     flight_no: eventPayload.flight_no ?? state.currentFlight.flight_no ?? "",
     direction: eventPayload.direction ?? state.currentFlight.direction ?? "",
-    airport: "MUC",
+    airport: airportCode,
+    from_airport: eventPayload.from_airport ?? state.currentFlight.from_airport ?? "",
+    to_airport: eventPayload.to_airport ?? state.currentFlight.to_airport ?? "",
+    airline_code: eventPayload.airline_code ?? state.currentFlight.airline_code ?? "",
     stand: eventPayload.stand ?? state.currentFlight.stand ?? "",
     gate: eventPayload.gate ?? state.currentFlight.gate ?? "",
+    process_id: eventPayload.process_code,
     process_code: eventPayload.process_code,
     process_label: eventPayload.process_label ?? "",
     event_type: eventPayload.event_type,
     event_timestamp: eventTimestamp,
+    start_time_abs: startTimeAbs,
+    end_time_abs: endTimeAbs,
+    duration_min: durationMin,
+    time_slot: timeSlot,
     disruption_flag: Boolean(disruptionFlag),
     disruption_type: eventPayload.disruption_type ?? "",
     notes: eventPayload.notes ?? "",
@@ -173,7 +333,20 @@ function addEvent(eventPayload) {
     source: "HIWI_LOGGER_V1",
     time_of_instancetaking: eventPayload.time_of_instancetaking ?? eventTimestamp,
     observation_quality: eventPayload.observation_quality ?? "",
+    location_latitude: eventPayload.location_latitude ?? state.location.latitude ?? "",
+    location_longitude: eventPayload.location_longitude ?? state.location.longitude ?? "",
+    location_accuracy_m: eventPayload.location_accuracy_m ?? state.location.accuracy ?? "",
+    location_timestamp: eventPayload.location_timestamp ?? state.location.timestamp ?? "",
+    quality_flag: airportCode ? "" : "missing_airport",
   };
+
+  const datePart = (startTimeAbs || eventTimestamp).slice(0, 10);
+  const turnaroundId = [event.airport || "UNK", event.flight_no || "UNK", datePart || "UNK", event.direction || "UNK"].join(
+    "-"
+  );
+  event.turnaround_id = turnaroundId;
+  event.instance_id = `${turnaroundId}-${event.process_code}-${state.events.length + 1}`;
+  event.instance_fingerprint = `${turnaroundId}|${event.process_code}|${event.event_type}|${event.event_timestamp}`;
 
   state = { ...state, events: [...state.events, event] };
   persistState();
@@ -181,6 +354,7 @@ function addEvent(eventPayload) {
   updateSessionSummary();
   clearFieldHighlights();
   setFeedback("");
+  return true;
 }
 
 function createSelect(name, options, { optional = false, label }) {
@@ -228,6 +402,7 @@ function createInputField({ id, label, type = "text", value = "", placeholder = 
 function renderFlightDetails(container) {
   const panel = document.createElement("div");
   panel.className = "card";
+  panel.id = "flight-panel";
 
   const header = document.createElement("div");
   header.className = "card-header";
@@ -246,6 +421,21 @@ function renderFlightDetails(container) {
 
   const row = document.createElement("div");
   row.className = "field-grid";
+
+  row.appendChild(
+    createInputField({
+      id: "airport-code",
+      label: "Airport (IATA)",
+      value: state.currentFlight.airport,
+      placeholder: "z.B. MUC",
+    })
+  );
+  const airportInput = row.querySelector("#airport-code");
+  if (airportInput) {
+    airportInput.addEventListener("input", (event) => {
+      setCurrentFlight("airport", event.target.value.toUpperCase());
+    });
+  }
 
   const directionSelect = document.createElement("div");
   directionSelect.className = "field-group";
@@ -269,6 +459,7 @@ function renderFlightDetails(container) {
   select.value = state.currentFlight.direction;
   select.addEventListener("change", (event) => {
     setCurrentFlight("direction", event.target.value);
+    renderProcessCards(document.getElementById("app"));
   });
 
   directionLabel.appendChild(select);
@@ -340,7 +531,100 @@ function renderFlightDetails(container) {
     });
   }
 
+  observerRow.appendChild(
+    createInputField({
+      id: "from-airport",
+      label: "From Airport (IATA, optional)",
+      value: state.currentFlight.from_airport,
+      placeholder: "z.B. FRA",
+    })
+  );
+
+  observerRow.appendChild(
+    createInputField({
+      id: "to-airport",
+      label: "To Airport (IATA, optional)",
+      value: state.currentFlight.to_airport,
+      placeholder: "z.B. JFK",
+    })
+  );
+
+  const fromAirportInput = observerRow.querySelector("#from-airport");
+  if (fromAirportInput) {
+    fromAirportInput.addEventListener("input", (event) => {
+      setCurrentFlight("from_airport", event.target.value.toUpperCase());
+    });
+  }
+
+  const toAirportInput = observerRow.querySelector("#to-airport");
+  if (toAirportInput) {
+    toAirportInput.addEventListener("input", (event) => {
+      setCurrentFlight("to_airport", event.target.value.toUpperCase());
+    });
+  }
+
   panel.appendChild(observerRow);
+
+  const airlineRow = document.createElement("div");
+  airlineRow.className = "field-grid";
+  airlineRow.appendChild(
+    createInputField({
+      id: "airline-code",
+      label: "Airline-Code (optional)",
+      value: state.currentFlight.airline_code,
+      placeholder: "z.B. LH",
+    })
+  );
+
+  const airlineCodeInput = airlineRow.querySelector("#airline-code");
+  if (airlineCodeInput) {
+    airlineCodeInput.addEventListener("input", (event) => {
+      setCurrentFlight("airline_code", event.target.value.toUpperCase());
+    });
+  }
+
+  panel.appendChild(airlineRow);
+
+  const locationRow = document.createElement("div");
+  locationRow.className = "location-row";
+
+  const locationInfo = document.createElement("div");
+  locationInfo.className = "location-info";
+  locationInfo.innerHTML = `
+    <div class="location-title">Standort</div>
+    <div class="location-values">
+      <span id="location-coordinates">–</span>
+      <span id="location-accuracy" class="muted">Genauigkeit: –</span>
+      <span id="location-timestamp" class="muted">Aktualisiert: –</span>
+    </div>
+  `;
+
+  const locationActions = document.createElement("div");
+  locationActions.className = "location-actions";
+
+  const locationButton = document.createElement("button");
+  locationButton.id = "location-button";
+  locationButton.className = "btn-neutral";
+  locationButton.type = "button";
+  locationButton.textContent = "GPS aktualisieren";
+  locationButton.addEventListener("click", requestLocation);
+
+  const resetLocationButton = document.createElement("button");
+  resetLocationButton.className = "btn-neutral";
+  resetLocationButton.type = "button";
+  resetLocationButton.textContent = "GPS löschen";
+  resetLocationButton.addEventListener("click", () => {
+    resetLocation();
+    setFeedback("GPS-Daten zurückgesetzt.");
+  });
+
+  locationActions.appendChild(locationButton);
+  locationActions.appendChild(resetLocationButton);
+
+  locationRow.appendChild(locationInfo);
+  locationRow.appendChild(locationActions);
+
+  panel.appendChild(locationRow);
 
   container.appendChild(panel);
 }
@@ -440,8 +724,13 @@ function renderSessionControls(container) {
 }
 
 function renderProcessCards(container) {
+  if (!container) return;
+  const existing = document.getElementById("process-panel");
+  if (existing) existing.remove();
+
   const panel = document.createElement("div");
   panel.className = "card";
+  panel.id = "process-panel";
 
   const header = document.createElement("div");
   header.className = "card-header";
@@ -451,7 +740,10 @@ function renderProcessCards(container) {
   title.textContent = "Prozesse";
   const helper = document.createElement("p");
   helper.className = "card-hint";
-  helper.textContent = "Start/Ende pro Prozess";
+  const activeDirection = state.currentFlight.direction;
+  helper.textContent = activeDirection
+    ? `Relevante Prozesse für ${activeDirection === "arrival" ? "Arrival" : "Departure"}`
+    : "Start/Ende pro Prozess";
 
   header.appendChild(title);
   header.appendChild(helper);
@@ -460,52 +752,85 @@ function renderProcessCards(container) {
   const list = document.createElement("div");
   list.className = "process-list";
 
-  PROCESS_CODES.forEach((process) => {
-    const card = document.createElement("div");
-    card.className = "process-card";
+  const visibleProcesses = state.currentFlight.direction
+    ? PROCESS_CODES.filter((process) => process.directions?.includes(state.currentFlight.direction))
+    : PROCESS_CODES;
 
-    const headerRow = document.createElement("div");
-    headerRow.className = "process-header";
+  if (!visibleProcesses.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "Keine Prozesse für diese Richtung hinterlegt.";
+    list.appendChild(empty);
+  } else {
+    visibleProcesses.forEach((process) => {
+      const card = document.createElement("div");
+      card.className = "process-card";
 
-    const label = document.createElement("div");
-    label.textContent = process.label;
+      const isActive = Boolean(state.activeProcesses?.[process.code]);
+      if (isActive) {
+        card.classList.add("is-active");
+      }
 
-    const code = document.createElement("span");
-    code.className = "pill process-code";
-    code.textContent = process.code;
+      const headerRow = document.createElement("div");
+      headerRow.className = "process-header";
 
-    headerRow.appendChild(label);
-    headerRow.appendChild(code);
+      const label = document.createElement("div");
+      label.textContent = process.label;
 
-    const actions = document.createElement("div");
-    actions.className = "button-row";
+      const code = document.createElement("span");
+      code.className = "pill process-code";
+      code.textContent = process.code;
 
-    const startButton = document.createElement("button");
-    startButton.className = "btn-start";
-    startButton.textContent = "Start";
-    startButton.addEventListener("click", () => handleAction(process, "start"));
+      headerRow.appendChild(label);
+      headerRow.appendChild(code);
 
-    const endButton = document.createElement("button");
-    endButton.className = "btn-end";
-    endButton.textContent = "Ende";
-    endButton.addEventListener("click", () => handleAction(process, "end"));
+      const actions = document.createElement("div");
+      actions.className = "button-row";
 
-    const instanceButton = document.createElement("button");
-    instanceButton.className = "btn-neutral";
-    instanceButton.textContent = "Instanz dokumentieren";
-    instanceButton.addEventListener("click", () => handleAction(process, "instance"));
+      const startButton = document.createElement("button");
+      startButton.className = "btn-start";
+      startButton.textContent = "Start";
+      startButton.disabled = isActive;
+      startButton.addEventListener("click", () => handleAction(process, "start"));
 
-    actions.appendChild(startButton);
-    actions.appendChild(endButton);
-    actions.appendChild(instanceButton);
+      const endButton = document.createElement("button");
+      endButton.className = "btn-end";
+      endButton.textContent = "Ende";
+      endButton.disabled = !isActive;
+      endButton.addEventListener("click", () => handleAction(process, "end"));
 
-    card.appendChild(headerRow);
-    card.appendChild(actions);
-    list.appendChild(card);
-  });
+      const instanceButton = document.createElement("button");
+      instanceButton.className = "btn-neutral";
+      instanceButton.textContent = "Instanz dokumentieren";
+      instanceButton.addEventListener("click", () => handleAction(process, "instance"));
+
+      actions.appendChild(startButton);
+      actions.appendChild(endButton);
+      actions.appendChild(instanceButton);
+
+      if (isActive) {
+        const indicator = document.createElement("div");
+        indicator.className = "process-indicator";
+        const since = state.activeProcesses[process.code];
+        const sinceLabel = since ? new Date(since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+        indicator.innerHTML = `<span class=\"pill running-pill\">Läuft${sinceLabel ? ` seit ${sinceLabel}` : ""}</span>`;
+        card.appendChild(indicator);
+      }
+
+      card.appendChild(headerRow);
+      card.appendChild(actions);
+      list.appendChild(card);
+    });
+  }
 
   panel.appendChild(list);
-  container.appendChild(panel);
+
+  const sessionPanel = document.getElementById("session-panel");
+  if (sessionPanel && container.contains(sessionPanel)) {
+    container.insertBefore(panel, sessionPanel);
+  } else {
+    container.appendChild(panel);
+  }
 }
 
 function renderLogPanel(container) {
@@ -545,6 +870,7 @@ function renderApp() {
   renderProcessCards(app);
   renderSessionControls(app);
   renderLogPanel(app);
+  updateLocationUi();
 }
 
 function getSelectedValues() {
@@ -567,6 +893,7 @@ function formatEventMessage(event) {
   const flightInfo = [event.flight_no || "-", event.direction || "-"].filter(Boolean).join(" | ");
   return `${event.event_type?.toUpperCase() || "-"} ${event.process_code} (${event.process_label}) | ` +
     `Flug: ${flightInfo || "-"} | ` +
+    `Airport: ${event.airport || "-"} | ` +
     `Stand: ${event.stand || "-"} Gate: ${event.gate || "-"} | ` +
     `Disruption: ${event.disruption_type || "-"}, ` +
     `Equipment: ${event.equipment_type || "-"}, ` +
@@ -601,25 +928,44 @@ function updateSessionSummary() {
 
 function handleAction(process, action) {
   const values = getSelectedValues();
-  addEvent({
+  const success = addEvent({
     process_code: process.code,
     process_label: process.label,
     event_type: action,
     ...values,
   });
+
+  if (!success) return;
+
+  if (action === "start") {
+    setActiveProcess(process.code);
+  } else if (action === "end") {
+    clearActiveProcess(process.code);
+  }
 }
 
 function toCsv() {
   const header = [
+    "process_id",
     "log_id",
+    "turnaround_id",
+    "instance_id",
+    "instance_fingerprint",
     "flight_no",
     "direction",
     "airport",
+    "from_airport",
+    "to_airport",
+    "airline_code",
     "stand",
     "gate",
     "process_code",
     "process_label",
     "event_type",
+    "start_time_abs",
+    "end_time_abs",
+    "duration_min",
+    "time_slot",
     "event_timestamp",
     "disruption_flag",
     "disruption_type",
@@ -631,6 +977,11 @@ function toCsv() {
     "observer_id",
     "source",
     "time_of_instancetaking",
+    "location_latitude",
+    "location_longitude",
+    "location_accuracy_m",
+    "location_timestamp",
+    "quality_flag",
   ];
 
   const escapeValue = (value) => {
@@ -688,6 +1039,7 @@ function handleExport() {
 document.addEventListener("DOMContentLoaded", () => {
   state = loadState();
   renderApp();
+  requestLocation(true);
   populateLog();
   updateSessionSummary();
   setFeedback("");
