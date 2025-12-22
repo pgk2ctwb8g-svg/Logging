@@ -1,0 +1,17 @@
+{
+  "name": "logging",
+  "version": "1.0.0",
+  "description": "Flight logging helper with proxy server for flight APIs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "NODE_ENV=development node server.js"
+  },
+  "keywords": ["flights", "proxy", "logging"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2",
+    "node-fetch": "^2.7.0"
+  }
+}
