@@ -20,6 +20,7 @@ const DEFAULT_STATE = {
     to_airport: "",
     airline_code: "",
   },
+  precheckCompleted: false,
   observer_id: "",
   location: {
     latitude: "",
@@ -97,6 +98,11 @@ function setObserver(value) {
   persistState();
 }
 
+function completePrecheck() {
+  state = { ...state, precheckCompleted: true };
+  persistState();
+}
+
 function promptForAirport() {
   const airport = window.prompt("Bitte IATA-Code des Flughafens eingeben (z.B. MUC):", state.currentFlight.airport || "");
   if (airport != null && airport.trim()) {
@@ -119,14 +125,16 @@ function setLocation({ latitude, longitude, accuracy, timestamp }) {
   };
   persistState();
   updateLocationUi();
+  setPrecheckFeedback("");
 }
 
 function resetLocation() {
   setLocation({ latitude: "", longitude: "", accuracy: "", timestamp: "" });
 }
 
-function requestLocation(isInitial = false) {
-  const button = document.getElementById("location-button");
+function requestLocation(options = {}) {
+  const { isInitial = false, buttonId } = typeof options === "boolean" ? { isInitial: options } : options ?? {};
+  const button = document.getElementById(buttonId || "location-button");
   if (!navigator.geolocation) {
     setFeedback("GPS wird vom Browser nicht unterstützt.");
     if (isInitial && !state.currentFlight.airport) {
@@ -399,6 +407,172 @@ function createInputField({ id, label, type = "text", value = "", placeholder = 
   return wrapper;
 }
 
+function setPrecheckFeedback(message) {
+  const feedback = document.getElementById("precheck-feedback");
+  if (feedback) {
+    feedback.textContent = message;
+    feedback.style.visibility = message ? "visible" : "hidden";
+  }
+}
+
+function renderPrecheckScreen(container) {
+  const panel = document.createElement("div");
+  panel.className = "card";
+  panel.id = "precheck-panel";
+
+  const header = document.createElement("div");
+  header.className = "card-header";
+
+  const title = document.createElement("h2");
+  title.className = "card-title";
+  title.textContent = "Start-Check";
+
+  const hint = document.createElement("p");
+  hint.className = "card-hint";
+  hint.textContent = "Bevor Prozesse gestartet werden können, bitte Basisdaten und Standort erfassen.";
+
+  header.appendChild(title);
+  header.appendChild(hint);
+  panel.appendChild(header);
+
+  const grid = document.createElement("div");
+  grid.className = "field-grid";
+
+  grid.appendChild(
+    createInputField({
+      id: "precheck-airport",
+      label: "Airport (IATA, Pflicht)",
+      value: state.currentFlight.airport,
+      placeholder: "z.B. MUC",
+    })
+  );
+
+  const directionSelect = document.createElement("div");
+  directionSelect.className = "field-group";
+  const directionLabel = document.createElement("label");
+  directionLabel.textContent = "Direction (Pflicht)";
+  const direction = document.createElement("select");
+  direction.id = "precheck-direction";
+  [
+    { value: "", label: "Keine Angabe" },
+    { value: "arrival", label: "Arrival" },
+    { value: "departure", label: "Departure" },
+  ].forEach((option) => {
+    const opt = document.createElement("option");
+    opt.value = option.value;
+    opt.textContent = option.label;
+    direction.appendChild(opt);
+  });
+  direction.value = state.currentFlight.direction;
+  directionLabel.appendChild(direction);
+  directionSelect.appendChild(directionLabel);
+  grid.appendChild(directionSelect);
+
+  grid.appendChild(
+    createInputField({
+      id: "precheck-flight-no",
+      label: "Flight-No (Pflicht)",
+      value: state.currentFlight.flight_no,
+      placeholder: "z.B. LH123",
+    })
+  );
+
+  grid.appendChild(
+    createInputField({
+      id: "precheck-stand",
+      label: "Stand (optional)",
+      value: state.currentFlight.stand,
+      placeholder: "z.B. G12",
+    })
+  );
+
+  panel.appendChild(grid);
+
+  const locationRow = document.createElement("div");
+  locationRow.className = "location-row";
+  locationRow.innerHTML = `
+    <div class="location-info">
+      <div class="location-title">Standort</div>
+      <div class="location-values">
+        <span id="location-coordinates">–</span>
+        <span id="location-accuracy" class="muted">Genauigkeit: –</span>
+        <span id="location-timestamp" class="muted">Aktualisiert: –</span>
+      </div>
+    </div>
+    <div class="location-actions">
+      <button id="precheck-location-button" class="btn-neutral" type="button">GPS abfragen</button>
+      <button id="precheck-continue-button" class="btn-start" type="button">Weiter zur Prozess-Übersicht</button>
+    </div>
+  `;
+
+  panel.appendChild(locationRow);
+
+  const feedback = document.createElement("div");
+  feedback.id = "precheck-feedback";
+  feedback.className = "feedback";
+  feedback.style.visibility = "hidden";
+  panel.appendChild(feedback);
+
+  container.appendChild(panel);
+
+  const airportInput = panel.querySelector("#precheck-airport");
+  const directionInput = panel.querySelector("#precheck-direction");
+  const flightInput = panel.querySelector("#precheck-flight-no");
+  const standInput = panel.querySelector("#precheck-stand");
+  const gpsButton = panel.querySelector("#precheck-location-button");
+  const continueButton = panel.querySelector("#precheck-continue-button");
+
+  if (airportInput) {
+    airportInput.addEventListener("input", (event) => {
+      setCurrentFlight("airport", event.target.value.toUpperCase());
+    });
+  }
+
+  if (directionInput) {
+    directionInput.addEventListener("change", (event) => {
+      setCurrentFlight("direction", event.target.value);
+    });
+  }
+
+  if (flightInput) {
+    flightInput.addEventListener("input", (event) => {
+      setCurrentFlight("flight_no", event.target.value);
+    });
+  }
+
+  if (standInput) {
+    standInput.addEventListener("input", (event) => {
+      setCurrentFlight("stand", event.target.value);
+    });
+  }
+
+  if (gpsButton) {
+    gpsButton.addEventListener("click", () => requestLocation({ buttonId: "precheck-location-button" }));
+  }
+
+  if (continueButton) {
+    continueButton.addEventListener("click", () => {
+      const errors = [];
+      if (!state.currentFlight.airport) errors.push("Airport");
+      if (!state.currentFlight.direction) errors.push("Direction");
+      if (!state.currentFlight.flight_no) errors.push("Flight-No");
+      if (!state.location.latitude || !state.location.longitude) {
+        errors.push("GPS-Position");
+      }
+
+      if (errors.length) {
+        setPrecheckFeedback(`Bitte ausfüllen: ${errors.join(", ")}.`);
+        return;
+      }
+
+      setPrecheckFeedback("");
+      completePrecheck();
+      renderApp();
+      updateLocationUi();
+    });
+  }
+}
+
 function renderFlightDetails(container) {
   const panel = document.createElement("div");
   panel.className = "card";
@@ -607,7 +781,7 @@ function renderFlightDetails(container) {
   locationButton.className = "btn-neutral";
   locationButton.type = "button";
   locationButton.textContent = "GPS aktualisieren";
-  locationButton.addEventListener("click", requestLocation);
+  locationButton.addEventListener("click", () => requestLocation({ buttonId: "location-button" }));
 
   const resetLocationButton = document.createElement("button");
   resetLocationButton.className = "btn-neutral";
@@ -865,6 +1039,11 @@ function renderLogPanel(container) {
 function renderApp() {
   const app = document.getElementById("app");
   app.innerHTML = "";
+  if (!state.precheckCompleted) {
+    renderPrecheckScreen(app);
+    updateLocationUi();
+    return;
+  }
   renderFlightDetails(app);
   renderDropdowns(app);
   renderProcessCards(app);
@@ -1039,7 +1218,7 @@ function handleExport() {
 document.addEventListener("DOMContentLoaded", () => {
   state = loadState();
   renderApp();
-  requestLocation(true);
+  requestLocation({ isInitial: true });
   populateLog();
   updateSessionSummary();
   setFeedback("");
