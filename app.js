@@ -19,6 +19,7 @@ const DEFAULT_STATE = {
     from_airport: "",
     to_airport: "",
     airline_code: "",
+    aircraft_type: "",
   },
   precheckCompleted: false,
   observer_id: "",
@@ -27,6 +28,14 @@ const DEFAULT_STATE = {
     longitude: "",
     accuracy: "",
     timestamp: "",
+  },
+  lastAirportSuggestion: "",
+  flightSuggestions: [],
+  flightSuggestionStatus: "idle",
+  flightSuggestionError: "",
+  flightApiConfig: {
+    url: "",
+    apiKey: "",
   },
   activeProcesses: {},
   completedProcesses: [],
@@ -59,6 +68,21 @@ const DROPDOWN_OPTIONS = {
   ],
 };
 
+const NEAREST_AIRPORT_MAX_DISTANCE_KM = 80;
+
+const AIRPORTS = [
+  { iata: "MUC", name: "Munich", lat: 48.3538, lon: 11.7861 },
+  { iata: "FRA", name: "Frankfurt", lat: 50.0333, lon: 8.5706 },
+  { iata: "BER", name: "Berlin Brandenburg", lat: 52.3667, lon: 13.5033 },
+  { iata: "HAM", name: "Hamburg", lat: 53.6304, lon: 9.9882 },
+  { iata: "CGN", name: "Cologne Bonn", lat: 50.8659, lon: 7.1427 },
+  { iata: "DUS", name: "Düsseldorf", lat: 51.2783, lon: 6.7656 },
+  { iata: "ZRH", name: "Zurich", lat: 47.4647, lon: 8.5492 },
+  { iata: "VIE", name: "Vienna", lat: 48.1103, lon: 16.5697 },
+  { iata: "GVA", name: "Geneva", lat: 46.2381, lon: 6.1089 },
+  { iata: "AMS", name: "Amsterdam Schiphol", lat: 52.3086, lon: 4.7639 },
+];
+
 let state = { ...DEFAULT_STATE };
 
 function loadState() {
@@ -87,6 +111,14 @@ function loadState() {
           activeProcesses: normalizedActive,
           events: Array.isArray(parsed.events) ? parsed.events : [],
           completedProcesses: normalizedCompleted,
+          lastAirportSuggestion: parsed.lastAirportSuggestion || "",
+          flightSuggestions: Array.isArray(parsed.flightSuggestions) ? parsed.flightSuggestions : [],
+          flightSuggestionStatus: parsed.flightSuggestionStatus || "idle",
+          flightSuggestionError: parsed.flightSuggestionError || "",
+          flightApiConfig: {
+            url: parsed.flightApiConfig?.url || "",
+            apiKey: parsed.flightApiConfig?.apiKey || "",
+          },
         };
       }
     }
@@ -100,17 +132,28 @@ function persistState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-function setCurrentFlight(field, value) {
+function setCurrentFlight(field, value, options = {}) {
   if (!(field in state.currentFlight)) return;
   state = {
     ...state,
     currentFlight: { ...state.currentFlight, [field]: value },
+    ...(options.trackSuggestion ? { lastAirportSuggestion: value || "" } : {}),
   };
   persistState();
+  syncFlightInputs();
 }
 
 function setObserver(value) {
   state = { ...state, observer_id: value };
+  persistState();
+}
+
+function setFlightApiConfig(field, value) {
+  if (!["url", "apiKey"].includes(field)) return;
+  state = {
+    ...state,
+    flightApiConfig: { ...state.flightApiConfig, [field]: value },
+  };
   persistState();
 }
 
@@ -142,6 +185,7 @@ function setLocation({ latitude, longitude, accuracy, timestamp }) {
   persistState();
   updateLocationUi();
   setPrecheckFeedback("");
+  updateAirportFromLocation();
 }
 
 function resetLocation() {
@@ -217,6 +261,58 @@ function updateLocationUi() {
       ? new Date(state.location.timestamp).toLocaleString()
       : "–";
     timestamp.textContent = `Aktualisiert: ${timeLabel}`;
+  }
+}
+
+function toRadians(degrees) {
+  return (degrees * Math.PI) / 180;
+}
+
+function distanceInKm(pointA, pointB) {
+  const R = 6371;
+  const dLat = toRadians(pointB.lat - pointA.lat);
+  const dLon = toRadians(pointB.lon - pointA.lon);
+  const lat1 = toRadians(pointA.lat);
+  const lat2 = toRadians(pointB.lat);
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.sin(dLon / 2) * Math.sin(dLon / 2) * Math.cos(lat1) * Math.cos(lat2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function findNearestAirport(latitude, longitude) {
+  if (latitude == null || longitude == null || AIRPORTS.length === 0) return null;
+  const origin = { lat: Number(latitude), lon: Number(longitude) };
+  const sorted = [...AIRPORTS]
+    .map((airport) => ({
+      ...airport,
+      distanceKm: distanceInKm(origin, { lat: airport.lat, lon: airport.lon }),
+    }))
+    .sort((a, b) => a.distanceKm - b.distanceKm);
+  return sorted[0] || null;
+}
+
+function updateAirportFromLocation() {
+  if (!state.location.latitude || !state.location.longitude) return;
+  const suggestion = findNearestAirport(Number(state.location.latitude), Number(state.location.longitude));
+  if (!suggestion) return;
+
+  if (suggestion.distanceKm <= NEAREST_AIRPORT_MAX_DISTANCE_KM) {
+    const manualAirportSet = state.currentFlight.airport && state.currentFlight.airport !== state.lastAirportSuggestion;
+    const distanceLabel = `${Math.round(suggestion.distanceKm)} km`;
+    if (manualAirportSet) {
+      setFeedback(`GPS gefunden: nächster Airport ${suggestion.iata} (${distanceLabel}). Manueller Wert bleibt erhalten.`);
+      return;
+    }
+    setCurrentFlight("airport", suggestion.iata, { trackSuggestion: true });
+    setFeedback(`Airport automatisch gesetzt: ${suggestion.iata} (${distanceLabel}).`);
+  } else {
+    if (!state.currentFlight.airport) {
+      setCurrentFlight("airport", "", { trackSuggestion: false });
+    }
+    setFeedback("GPS gefunden, aber kein naher Airport erkannt. Bitte manuell eintragen.");
   }
 }
 
@@ -362,6 +458,7 @@ function addEvent(eventPayload) {
     from_airport: eventPayload.from_airport ?? state.currentFlight.from_airport ?? "",
     to_airport: eventPayload.to_airport ?? state.currentFlight.to_airport ?? "",
     airline_code: eventPayload.airline_code ?? state.currentFlight.airline_code ?? "",
+    aircraft_type: eventPayload.aircraft_type ?? state.currentFlight.aircraft_type ?? "",
     stand: eventPayload.stand ?? state.currentFlight.stand ?? "",
     gate: eventPayload.gate ?? state.currentFlight.gate ?? "",
     process_id: eventPayload.process_code,
@@ -447,6 +544,28 @@ function createInputField({ id, label, type = "text", value = "", placeholder = 
   fieldLabel.appendChild(input);
   wrapper.appendChild(fieldLabel);
   return wrapper;
+}
+
+function syncFlightInputs() {
+  const mapping = [
+    ["airport-code", state.currentFlight.airport],
+    ["precheck-airport", state.currentFlight.airport],
+    ["flight-no", state.currentFlight.flight_no],
+    ["precheck-flight-no", state.currentFlight.flight_no],
+    ["flight-stand", state.currentFlight.stand],
+    ["flight-gate", state.currentFlight.gate],
+    ["from-airport", state.currentFlight.from_airport],
+    ["to-airport", state.currentFlight.to_airport],
+    ["airline-code", state.currentFlight.airline_code],
+    ["aircraft-type", state.currentFlight.aircraft_type],
+  ];
+
+  mapping.forEach(([id, value]) => {
+    const input = document.getElementById(id);
+    if (input && document.activeElement !== input) {
+      input.value = value ?? "";
+    }
+  });
 }
 
 function setPrecheckFeedback(message) {
@@ -799,6 +918,22 @@ function renderFlightDetails(container) {
     });
   }
 
+  airlineRow.appendChild(
+    createInputField({
+      id: "aircraft-type",
+      label: "Aircraft Type (optional)",
+      value: state.currentFlight.aircraft_type,
+      placeholder: "z.B. A20N",
+    })
+  );
+
+  const aircraftTypeInput = airlineRow.querySelector("#aircraft-type");
+  if (aircraftTypeInput) {
+    aircraftTypeInput.addEventListener("input", (event) => {
+      setCurrentFlight("aircraft_type", event.target.value.toUpperCase());
+    });
+  }
+
   panel.appendChild(airlineRow);
 
   const locationRow = document.createElement("div");
@@ -843,6 +978,268 @@ function renderFlightDetails(container) {
   panel.appendChild(locationRow);
 
   container.appendChild(panel);
+}
+
+function renderFlightSuggestions(container) {
+  const existing = document.getElementById("flight-suggestions");
+  if (existing) existing.remove();
+
+  const panel = document.createElement("div");
+  panel.className = "card";
+  panel.id = "flight-suggestions";
+
+  const header = document.createElement("div");
+  header.className = "card-header";
+
+  const title = document.createElement("h2");
+  title.className = "card-title";
+  title.textContent = "Flugvorschläge (±30 Min)";
+
+  const hint = document.createElement("p");
+  hint.className = "card-hint";
+  hint.textContent =
+    "Lädt Flüge für den gesetzten Airport und schlägt Flugnummer & Aircraft Type vor. Falls kein API konfiguriert ist, werden Beispieldaten genutzt.";
+
+  header.appendChild(title);
+  header.appendChild(hint);
+  panel.appendChild(header);
+
+  const actions = document.createElement("div");
+  actions.className = "button-row";
+
+  const fetchButton = document.createElement("button");
+  fetchButton.className = "btn-neutral";
+  fetchButton.type = "button";
+  fetchButton.textContent = state.flightSuggestionStatus === "loading" ? "Lade..." : "Flüge laden";
+  fetchButton.disabled = !state.currentFlight.airport || state.flightSuggestionStatus === "loading";
+  fetchButton.addEventListener("click", fetchFlightSuggestions);
+
+  const clearButton = document.createElement("button");
+  clearButton.className = "btn-neutral";
+  clearButton.type = "button";
+  clearButton.textContent = "Vorschläge leeren";
+  clearButton.disabled = state.flightSuggestions.length === 0;
+  clearButton.addEventListener("click", () => {
+    state = { ...state, flightSuggestions: [], flightSuggestionStatus: "idle", flightSuggestionError: "" };
+    persistState();
+    renderFlightSuggestions(document.getElementById("app"));
+  });
+
+  actions.appendChild(fetchButton);
+  actions.appendChild(clearButton);
+  panel.appendChild(actions);
+
+  const status = document.createElement("div");
+  status.className = "muted";
+  status.style.fontSize = "0.95rem";
+  const apiSource = state.flightApiConfig.url
+    ? `Quelle: ${state.flightApiConfig.url}${state.flightApiConfig.apiKey ? " (Bearer Token gesetzt)" : ""}`
+    : "Quelle: Sample-Daten (kein API-Endpoint hinterlegt)";
+  status.textContent =
+    state.flightSuggestionStatus === "loading"
+      ? "Flüge werden geladen..."
+      : state.flightSuggestionStatus === "error"
+        ? `Fehler beim Laden: ${state.flightSuggestionError || "unbekannt"}`
+        : state.currentFlight.airport
+          ? `Airport: ${state.currentFlight.airport}. Ladezeitraum: jetzt ±30 Min. ${apiSource}`
+          : `Bitte zuerst Airport setzen, um Vorschläge zu laden. ${apiSource}`;
+  panel.appendChild(status);
+
+  const apiHint = document.createElement("p");
+  apiHint.className = "card-hint";
+  apiHint.style.marginTop = "-0.25rem";
+  apiHint.textContent =
+    "Hinweis: Externe APIs benötigen CORS-Freigabe. Falls Flightradar/andere Quellen blocken, nutze einen kleinen Proxy (z.B. Cloudflare Worker) und trage dessen URL hier ein.";
+  panel.appendChild(apiHint);
+
+  const apiGrid = document.createElement("div");
+  apiGrid.className = "field-grid";
+
+  apiGrid.appendChild(
+    createInputField({
+      id: "flight-api-url",
+      label: "Flug-API URL (optional, inkl. https://)",
+      value: state.flightApiConfig.url,
+      placeholder: "https://api.example.com/flights",
+    })
+  );
+
+  apiGrid.appendChild(
+    createInputField({
+      id: "flight-api-key",
+      label: "API Key / Bearer Token (optional)",
+      value: state.flightApiConfig.apiKey,
+      placeholder: "token wird als Bearer gesendet",
+    })
+  );
+
+  const apiUrlInput = apiGrid.querySelector("#flight-api-url");
+  if (apiUrlInput) {
+    apiUrlInput.addEventListener("input", (event) => {
+      setFlightApiConfig("url", event.target.value.trim());
+    });
+  }
+
+  const apiKeyInput = apiGrid.querySelector("#flight-api-key");
+  if (apiKeyInput) {
+    apiKeyInput.addEventListener("input", (event) => {
+      setFlightApiConfig("apiKey", event.target.value.trim());
+    });
+  }
+
+  panel.appendChild(apiGrid);
+
+  const list = document.createElement("div");
+  list.id = "flight-suggestion-list";
+  list.className = "process-list";
+
+  if (!state.flightSuggestions.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "Noch keine Vorschläge geladen.";
+    list.appendChild(empty);
+  } else {
+    state.flightSuggestions.forEach((flight) => {
+      const card = document.createElement("div");
+      card.className = "process-card";
+
+      const headerRow = document.createElement("div");
+      headerRow.className = "process-header";
+
+      const label = document.createElement("div");
+      label.innerHTML = `<strong>${flight.flight_no || "Unbekannter Flug"}</strong> · ${
+        flight.airline || "Airline n/a"
+      }`;
+
+      const meta = document.createElement("span");
+      meta.className = "pill";
+      meta.textContent = flight.aircraft_type || "Type n/a";
+
+      headerRow.appendChild(label);
+      headerRow.appendChild(meta);
+      card.appendChild(headerRow);
+
+      const detail = document.createElement("div");
+      detail.className = "muted";
+      detail.textContent = flight.description || "Zeitnaher Flug im ±30 Min Slot.";
+      card.appendChild(detail);
+
+      const applyButton = document.createElement("button");
+      applyButton.className = "btn-start";
+      applyButton.type = "button";
+      applyButton.textContent = "Flug übernehmen";
+      applyButton.addEventListener("click", () => {
+        setCurrentFlight("flight_no", flight.flight_no || "");
+        setCurrentFlight("airline_code", flight.airline_code || "");
+        setCurrentFlight("aircraft_type", flight.aircraft_type || "");
+        if (flight.direction) setCurrentFlight("direction", flight.direction);
+        if (flight.gate) setCurrentFlight("gate", flight.gate);
+        if (flight.stand) setCurrentFlight("stand", flight.stand);
+        renderProcessCards(document.getElementById("app"));
+        setFeedback(`Flug ${flight.flight_no || ""} übernommen.`);
+      });
+
+      card.appendChild(applyButton);
+      list.appendChild(card);
+    });
+  }
+
+  panel.appendChild(list);
+  container.appendChild(panel);
+}
+
+function buildSampleFlights(airport) {
+  const now = new Date();
+  const makeTimeLabel = (offsetMinutes) => {
+    const target = new Date(now.getTime() + offsetMinutes * 60000);
+    return target.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  };
+
+  return [
+    {
+      flight_no: `${state.currentFlight.airline_code || "LH"}${Math.floor(100 + Math.random() * 800)}`,
+      airline: "Beispiel Airline",
+      airline_code: state.currentFlight.airline_code || "LH",
+      aircraft_type: "A20N",
+      direction: state.currentFlight.direction || "departure",
+      gate: "K5",
+      stand: "G12",
+      description: `Abflug in ${makeTimeLabel(15)} ab ${airport}.`,
+    },
+    {
+      flight_no: `X${Math.floor(4000 + Math.random() * 500)}`,
+      airline: "Beispiel Charter",
+      airline_code: "X3",
+      aircraft_type: "B738",
+      direction: "arrival",
+      gate: "L2",
+      stand: "R4",
+      description: `Ankunft gegen ${makeTimeLabel(-10)} an ${airport}.`,
+    },
+  ];
+}
+
+async function fetchFlightSuggestions() {
+  if (!state.currentFlight.airport) {
+    setFeedback("Bitte zuerst einen Airport setzen.");
+    return;
+  }
+
+  state = { ...state, flightSuggestionStatus: "loading", flightSuggestionError: "" };
+  persistState();
+  renderFlightSuggestions(document.getElementById("app"));
+
+  const now = Math.floor(Date.now() / 1000);
+  const start = now - 30 * 60;
+  const end = now + 30 * 60;
+
+  const config = state.flightApiConfig?.url
+    ? state.flightApiConfig
+    : window.flightApiConfig;
+  let flights = [];
+  let status = "idle";
+  let errorMessage = "";
+
+  if (config?.url) {
+    try {
+      const params = new URLSearchParams({
+        airport: state.currentFlight.airport,
+        start: new Date(start * 1000).toISOString(),
+        end: new Date(end * 1000).toISOString(),
+        direction: state.currentFlight.direction || "",
+      });
+      const response = await fetch(`${config.url}?${params.toString()}`, {
+        headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {},
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const data = await response.json();
+      flights =
+        Array.isArray(data?.flights) && data.flights.length
+          ? data.flights
+          : Array.isArray(data)
+            ? data
+            : [];
+    } catch (error) {
+      console.warn("Konnte Flug-API nicht laden, fallback auf Sample.", error);
+      status = "error";
+      errorMessage = error.message || "API Fehler";
+    }
+  }
+
+  if (!flights.length) {
+    flights = buildSampleFlights(state.currentFlight.airport);
+  }
+
+  state = {
+    ...state,
+    flightSuggestions: flights.slice(0, 10),
+    flightSuggestionStatus: status,
+    flightSuggestionError: errorMessage,
+  };
+  persistState();
+  renderFlightSuggestions(document.getElementById("app"));
 }
 
 function renderDropdowns(container) {
@@ -1207,6 +1604,7 @@ function renderApp() {
     return;
   }
   renderFlightDetails(app);
+  renderFlightSuggestions(app);
   renderDropdowns(app);
   renderProcessCards(app);
   renderSessionControls(app);
@@ -1235,6 +1633,7 @@ function formatEventMessage(event) {
   return `${event.event_type?.toUpperCase() || "-"} ${event.process_code} (${event.process_label}) | ` +
     `Flug: ${flightInfo || "-"} | ` +
     `Airport: ${event.airport || "-"} | ` +
+    `Aircraft: ${event.aircraft_type || "-"} | ` +
     `Stand: ${event.stand || "-"} Gate: ${event.gate || "-"} | ` +
     `Disruption: ${event.disruption_type || "-"}, ` +
     `Equipment: ${event.equipment_type || "-"}, ` +
@@ -1298,6 +1697,7 @@ function toCsv() {
     "from_airport",
     "to_airport",
     "airline_code",
+    "aircraft_type",
     "stand",
     "gate",
     "process_code",
