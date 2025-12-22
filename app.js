@@ -68,7 +68,7 @@ const DROPDOWN_OPTIONS = {
   ],
 };
 
-const NEAREST_AIRPORT_MAX_DISTANCE_KM = 80;
+const NEAREST_AIRPORT_MAX_DISTANCE_KM = 150;
 
 const AIRPORTS = [
   { iata: "MUC", name: "Munich", lat: 48.3538, lon: 11.7861 },
@@ -77,10 +77,22 @@ const AIRPORTS = [
   { iata: "HAM", name: "Hamburg", lat: 53.6304, lon: 9.9882 },
   { iata: "CGN", name: "Cologne Bonn", lat: 50.8659, lon: 7.1427 },
   { iata: "DUS", name: "Düsseldorf", lat: 51.2783, lon: 6.7656 },
+  { iata: "STR", name: "Stuttgart", lat: 48.6899, lon: 9.2219 },
+  { iata: "NUE", name: "Nuremberg", lat: 49.4987, lon: 11.0669 },
+  { iata: "LEJ", name: "Leipzig/Halle", lat: 51.4239, lon: 12.2364 },
+  { iata: "HAJ", name: "Hannover", lat: 52.4611, lon: 9.685 },
+  { iata: "DTM", name: "Dortmund", lat: 51.5183, lon: 7.6122 },
+  { iata: "FMM", name: "Memmingen", lat: 47.9888, lon: 10.2395 },
   { iata: "ZRH", name: "Zurich", lat: 47.4647, lon: 8.5492 },
-  { iata: "VIE", name: "Vienna", lat: 48.1103, lon: 16.5697 },
   { iata: "GVA", name: "Geneva", lat: 46.2381, lon: 6.1089 },
+  { iata: "BSL", name: "Basel Mulhouse", lat: 47.59, lon: 7.5299 },
+  { iata: "BRN", name: "Bern", lat: 46.9141, lon: 7.4986 },
+  { iata: "VIE", name: "Vienna", lat: 48.1103, lon: 16.5697 },
+  { iata: "SZG", name: "Salzburg", lat: 47.7933, lon: 13.0033 },
+  { iata: "INN", name: "Innsbruck", lat: 47.2602, lon: 11.3439 },
   { iata: "AMS", name: "Amsterdam Schiphol", lat: 52.3086, lon: 4.7639 },
+  { iata: "LUX", name: "Luxembourg", lat: 49.6266, lon: 6.2115 },
+  { iata: "PRG", name: "Prague", lat: 50.1008, lon: 14.26 },
 ];
 
 let state = { ...DEFAULT_STATE };
@@ -298,6 +310,8 @@ function updateAirportFromLocation() {
   if (!state.location.latitude || !state.location.longitude) return;
   const suggestion = findNearestAirport(Number(state.location.latitude), Number(state.location.longitude));
   if (!suggestion) return;
+
+  console.log("Nearest airport suggestion:", suggestion, "distanceKm:", suggestion.distanceKm);
 
   if (suggestion.distanceKm <= NEAREST_AIRPORT_MAX_DISTANCE_KM) {
     const manualAirportSet = state.currentFlight.airport && state.currentFlight.airport !== state.lastAirportSuggestion;
