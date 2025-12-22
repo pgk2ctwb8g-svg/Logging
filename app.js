@@ -30,6 +30,7 @@ const DEFAULT_STATE = {
     timestamp: "",
   },
   lastAirportSuggestion: "",
+  lastAirportPromptLocationKey: "",
   flightSuggestions: [],
   flightSuggestionStatus: "idle",
   flightSuggestionError: "",
@@ -124,6 +125,7 @@ function loadState() {
           events: Array.isArray(parsed.events) ? parsed.events : [],
           completedProcesses: normalizedCompleted,
           lastAirportSuggestion: parsed.lastAirportSuggestion || "",
+          lastAirportPromptLocationKey: parsed.lastAirportPromptLocationKey || "",
           flightSuggestions: Array.isArray(parsed.flightSuggestions) ? parsed.flightSuggestions : [],
           flightSuggestionStatus: parsed.flightSuggestionStatus || "idle",
           flightSuggestionError: parsed.flightSuggestionError || "",
@@ -314,6 +316,9 @@ function updateAirportFromLocation() {
     setFeedback("Keine Airport-Daten verfügbar. Bitte Airport manuell eintragen.");
     return;
   }
+
+  const locationPromptKey = `${state.location.latitude},${state.location.longitude}|${state.location.timestamp}`;
+  if (state.lastAirportPromptLocationKey === locationPromptKey) return;
 
   console.log("Nearest airport suggestion:", suggestion, "distanceKm:", suggestion.distanceKm);
 
