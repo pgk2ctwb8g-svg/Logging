@@ -136,9 +136,12 @@ function addEvent(eventPayload) {
   setFeedback("");
 }
 
-function createSelect(name, options, { optional = false } = {}) {
-  const wrapper = document.createElement("label");
-  wrapper.textContent = name.replace("_", " ");
+function createSelect(name, options, { optional = false, label }) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "field-group";
+
+  const fieldLabel = document.createElement("label");
+  fieldLabel.textContent = label ?? name.replace("_", " ");
 
   const select = document.createElement("select");
   select.name = name;
@@ -150,34 +153,18 @@ function createSelect(name, options, { optional = false } = {}) {
     select.appendChild(opt);
   });
 
-  wrapper.appendChild(select);
+  fieldLabel.appendChild(select);
+  wrapper.appendChild(fieldLabel);
   return wrapper;
 }
 
-function renderDropdowns(container) {
-  const dropdownPanel = document.createElement("div");
-  dropdownPanel.className = "panel";
-
-  const title = document.createElement("h2");
-  title.textContent = "Dropdowns";
-  dropdownPanel.appendChild(title);
-
-  const row = document.createElement("div");
-  row.className = "field-row";
-
-  row.appendChild(createSelect("disruption_type", DROPDOWN_OPTIONS.disruption_type));
-  row.appendChild(createSelect("equipment_type", DROPDOWN_OPTIONS.equipment_type));
-  row.appendChild(createSelect("pax_mix", DROPDOWN_OPTIONS.pax_mix));
-  row.appendChild(createSelect("observation_quality", DROPDOWN_OPTIONS.observation_quality, { optional: true }));
-
-  dropdownPanel.appendChild(row);
-  container.appendChild(dropdownPanel);
-}
-
 function createInputField({ id, label, type = "text", value = "", placeholder = "" }) {
-  const wrapper = document.createElement("label");
-  wrapper.htmlFor = id;
-  wrapper.textContent = label;
+  const wrapper = document.createElement("div");
+  wrapper.className = "field-group";
+
+  const fieldLabel = document.createElement("label");
+  fieldLabel.htmlFor = id;
+  fieldLabel.textContent = label;
 
   const input = document.createElement("input");
   input.id = id;
@@ -186,23 +173,38 @@ function createInputField({ id, label, type = "text", value = "", placeholder = 
   input.placeholder = placeholder;
   input.autocomplete = "off";
 
-  wrapper.appendChild(input);
+  fieldLabel.appendChild(input);
+  wrapper.appendChild(fieldLabel);
   return wrapper;
 }
 
 function renderFlightDetails(container) {
   const panel = document.createElement("div");
-  panel.className = "panel";
+  panel.className = "card";
+
+  const header = document.createElement("div");
+  header.className = "card-header";
 
   const title = document.createElement("h2");
+  title.className = "card-title";
   title.textContent = "Flugdetails";
-  panel.appendChild(title);
+  header.appendChild(title);
+
+  const hint = document.createElement("p");
+  hint.className = "card-hint";
+  hint.textContent = "Grunddaten des Fluges und Beobachter*in";
+  header.appendChild(hint);
+
+  panel.appendChild(header);
 
   const row = document.createElement("div");
-  row.className = "field-row";
+  row.className = "field-grid";
 
-  const directionSelect = document.createElement("label");
-  directionSelect.textContent = "Direction";
+  const directionSelect = document.createElement("div");
+  directionSelect.className = "field-group";
+
+  const directionLabel = document.createElement("label");
+  directionLabel.textContent = "Direction";
   const select = document.createElement("select");
   select.id = "flight-direction";
 
@@ -222,7 +224,8 @@ function renderFlightDetails(container) {
     setCurrentFlight("direction", event.target.value);
   });
 
-  directionSelect.appendChild(select);
+  directionLabel.appendChild(select);
+  directionSelect.appendChild(directionLabel);
 
   row.appendChild(
     createInputField({
@@ -273,7 +276,7 @@ function renderFlightDetails(container) {
   panel.appendChild(row);
 
   const observerRow = document.createElement("div");
-  observerRow.className = "field-row";
+  observerRow.className = "field-grid";
   observerRow.appendChild(
     createInputField({
       id: "observer-id",
@@ -295,17 +298,64 @@ function renderFlightDetails(container) {
   container.appendChild(panel);
 }
 
+function renderDropdowns(container) {
+  const panel = document.createElement("div");
+  panel.className = "card";
+
+  const header = document.createElement("div");
+  header.className = "card-header";
+
+  const title = document.createElement("h2");
+  title.className = "card-title";
+  title.textContent = "Kontext & Notizen";
+  header.appendChild(title);
+
+  const hint = document.createElement("p");
+  hint.className = "card-hint";
+  hint.textContent = "Disruption, Equipment, Pax-Mix und Beobachtungsqualität erfassen.";
+  header.appendChild(hint);
+
+  panel.appendChild(header);
+
+  const grid = document.createElement("div");
+  grid.className = "field-grid";
+
+  grid.appendChild(createSelect("disruption_type", DROPDOWN_OPTIONS.disruption_type, { label: "Disruption" }));
+  grid.appendChild(createSelect("equipment_type", DROPDOWN_OPTIONS.equipment_type, { label: "Equipment" }));
+  grid.appendChild(createSelect("pax_mix", DROPDOWN_OPTIONS.pax_mix, { label: "Pax-Mix" }));
+  grid.appendChild(
+    createSelect("observation_quality", DROPDOWN_OPTIONS.observation_quality, {
+      optional: true,
+      label: "Observation Quality",
+    })
+  );
+
+  const notesField = document.createElement("div");
+  notesField.className = "field-group";
+  const notesLabel = document.createElement("label");
+  notesLabel.htmlFor = "notes";
+  notesLabel.textContent = "Notes";
+  const textarea = document.createElement("textarea");
+  textarea.id = "notes";
+  textarea.placeholder = "Zusätzliche Hinweise, Störungen oder Beobachtungen";
+  notesLabel.appendChild(textarea);
+  notesField.appendChild(notesLabel);
+  grid.appendChild(notesField);
+
+  panel.appendChild(grid);
+  container.appendChild(panel);
+}
+
 function renderSessionControls(container) {
   const panel = document.createElement("div");
-  panel.className = "panel";
+  panel.className = "card";
   panel.id = "session-panel";
 
   const header = document.createElement("div");
-  header.style.display = "flex";
-  header.style.justifyContent = "space-between";
-  header.style.alignItems = "center";
+  header.className = "card-header";
 
   const title = document.createElement("h2");
+  title.className = "card-title";
   title.textContent = "Session";
 
   const summary = document.createElement("span");
@@ -335,17 +385,16 @@ function renderSessionControls(container) {
 
 function renderProcessCards(container) {
   const panel = document.createElement("div");
-  panel.className = "panel";
+  panel.className = "card";
 
   const header = document.createElement("div");
-  header.style.display = "flex";
-  header.style.justifyContent = "space-between";
-  header.style.alignItems = "baseline";
+  header.className = "card-header";
 
   const title = document.createElement("h2");
+  title.className = "card-title";
   title.textContent = "Prozesse";
-  const helper = document.createElement("span");
-  helper.className = "muted";
+  const helper = document.createElement("p");
+  helper.className = "card-hint";
   helper.textContent = "Start/Ende pro Prozess";
 
   header.appendChild(title);
@@ -402,26 +451,22 @@ function renderLogPanel(container) {
   if (!logPanel) {
     logPanel = document.createElement("div");
     logPanel.id = "log-panel";
-    logPanel.className = "panel";
+    logPanel.className = "card";
 
     const title = document.createElement("h2");
+    title.className = "card-title";
     title.textContent = "Aktivität";
     logPanel.appendChild(title);
 
     const feedback = document.createElement("div");
     feedback.id = "feedback";
-    feedback.className = "feedback muted";
+    feedback.className = "feedback";
     feedback.style.visibility = "hidden";
     logPanel.appendChild(feedback);
 
     const list = document.createElement("ul");
     list.id = "log-list";
-    list.className = "muted";
-    list.style.listStyle = "disc";
-    list.style.paddingLeft = "1.25rem";
-    list.style.display = "flex";
-    list.style.flexDirection = "column";
-    list.style.gap = "0.35rem";
+    list.className = "log-list";
     logPanel.appendChild(list);
 
     container.appendChild(logPanel);
@@ -441,12 +486,19 @@ function renderApp() {
 }
 
 function getSelectedValues() {
-  return Object.fromEntries(
+  const dropdownValues = Object.fromEntries(
     Object.keys(DROPDOWN_OPTIONS).map((key) => {
       const select = document.querySelector(`select[name="${key}"]`);
       return [key, select?.value ?? ""];
     })
   );
+
+  const notesInput = document.getElementById("notes");
+
+  return {
+    ...dropdownValues,
+    notes: notesInput?.value ?? "",
+  };
 }
 
 function formatEventMessage(event) {
