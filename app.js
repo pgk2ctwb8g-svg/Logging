@@ -15,6 +15,10 @@ const DEFAULT_STATE = {
     direction: "",
     stand: "",
     gate: "",
+    airport: "",
+    from_airport: "",
+    to_airport: "",
+    airline_code: "",
   },
   observer_id: "",
   location: {
@@ -93,6 +97,16 @@ function setObserver(value) {
   persistState();
 }
 
+function promptForAirport() {
+  const airport = window.prompt("Bitte IATA-Code des Flughafens eingeben (z.B. MUC):", state.currentFlight.airport || "");
+  if (airport != null && airport.trim()) {
+    setCurrentFlight("airport", airport.trim().toUpperCase());
+    setFeedback("Airport gesetzt.");
+  } else {
+    setFeedback("Kein Airport gesetzt. Bitte manuell nachtragen.");
+  }
+}
+
 function setLocation({ latitude, longitude, accuracy, timestamp }) {
   state = {
     ...state,
@@ -111,10 +125,13 @@ function resetLocation() {
   setLocation({ latitude: "", longitude: "", accuracy: "", timestamp: "" });
 }
 
-function requestLocation() {
+function requestLocation(isInitial = false) {
   const button = document.getElementById("location-button");
   if (!navigator.geolocation) {
     setFeedback("GPS wird vom Browser nicht unterstützt.");
+    if (isInitial && !state.currentFlight.airport) {
+      promptForAirport();
+    }
     return;
   }
 
@@ -142,6 +159,9 @@ function requestLocation() {
     (error) => {
       console.warn("GPS Fehler", error);
       setFeedback("GPS konnte nicht abgefragt werden.");
+      if (isInitial && !state.currentFlight.airport) {
+        promptForAirport();
+      }
       if (button) {
         button.disabled = false;
         button.textContent = "GPS aktualisieren";
@@ -198,6 +218,7 @@ function highlightMissingFields(missingFields) {
   const fieldIdMap = {
     flight_no: "flight-no",
     direction: "flight-direction",
+    airport: "airport-code",
   };
 
   missingFields.forEach((field) => {
@@ -234,11 +255,13 @@ function getMissingRequiredFields(eventPayload) {
 
   const flightNo = eventPayload.flight_no ?? state.currentFlight.flight_no;
   const direction = eventPayload.direction ?? state.currentFlight.direction;
+  const airport = eventPayload.airport ?? state.currentFlight.airport;
 
   if (!eventPayload.process_code) missing.push("process_code");
   if (!eventPayload.event_type) missing.push("event_type");
   if (!flightNo) missing.push("flight_no");
   if (!direction) missing.push("direction");
+  if (!airport) missing.push("airport");
 
   return missing;
 }
@@ -252,6 +275,7 @@ function addEvent(eventPayload) {
       event_type: "Aktion",
       flight_no: "Flugnummer",
       direction: "Richtung",
+      airport: "Airport",
     };
     const missingLabels = missingFields.map((field) => labels[field] || field).join(", ");
     highlightMissingFields(missingFields);
@@ -262,18 +286,43 @@ function addEvent(eventPayload) {
   const now = new Date();
   const eventTimestamp = now.toISOString();
   const disruptionFlag = eventPayload.disruption_flag ?? (eventPayload.disruption_type && eventPayload.disruption_type !== "none");
+  const isStart = eventPayload.event_type === "start";
+  const isEnd = eventPayload.event_type === "end";
 
+  const startTimeAbs = isStart
+    ? eventTimestamp
+    : state.activeProcesses[eventPayload.process_code] || "";
+  const endTimeAbs = isEnd ? eventTimestamp : "";
+
+  const durationMin =
+    startTimeAbs && endTimeAbs ? Number(((new Date(endTimeAbs) - new Date(startTimeAbs)) / 60000).toFixed(2)) : "";
+
+  const timeSlot = startTimeAbs
+    ? `${String(new Date(startTimeAbs).getHours()).padStart(2, "0")}-${String(
+        (new Date(startTimeAbs).getHours() + 1) % 24
+      ).padStart(2, "0")}`
+    : "";
+
+  const airportCode = (eventPayload.airport ?? state.currentFlight.airport ?? "").toUpperCase();
   const event = {
     log_id: `${now.getTime()}-${state.events.length + 1}`,
     flight_no: eventPayload.flight_no ?? state.currentFlight.flight_no ?? "",
     direction: eventPayload.direction ?? state.currentFlight.direction ?? "",
-    airport: "MUC",
+    airport: airportCode,
+    from_airport: eventPayload.from_airport ?? state.currentFlight.from_airport ?? "",
+    to_airport: eventPayload.to_airport ?? state.currentFlight.to_airport ?? "",
+    airline_code: eventPayload.airline_code ?? state.currentFlight.airline_code ?? "",
     stand: eventPayload.stand ?? state.currentFlight.stand ?? "",
     gate: eventPayload.gate ?? state.currentFlight.gate ?? "",
+    process_id: eventPayload.process_code,
     process_code: eventPayload.process_code,
     process_label: eventPayload.process_label ?? "",
     event_type: eventPayload.event_type,
     event_timestamp: eventTimestamp,
+    start_time_abs: startTimeAbs,
+    end_time_abs: endTimeAbs,
+    duration_min: durationMin,
+    time_slot: timeSlot,
     disruption_flag: Boolean(disruptionFlag),
     disruption_type: eventPayload.disruption_type ?? "",
     notes: eventPayload.notes ?? "",
@@ -288,7 +337,16 @@ function addEvent(eventPayload) {
     location_longitude: eventPayload.location_longitude ?? state.location.longitude ?? "",
     location_accuracy_m: eventPayload.location_accuracy_m ?? state.location.accuracy ?? "",
     location_timestamp: eventPayload.location_timestamp ?? state.location.timestamp ?? "",
+    quality_flag: airportCode ? "" : "missing_airport",
   };
+
+  const datePart = (startTimeAbs || eventTimestamp).slice(0, 10);
+  const turnaroundId = [event.airport || "UNK", event.flight_no || "UNK", datePart || "UNK", event.direction || "UNK"].join(
+    "-"
+  );
+  event.turnaround_id = turnaroundId;
+  event.instance_id = `${turnaroundId}-${event.process_code}-${state.events.length + 1}`;
+  event.instance_fingerprint = `${turnaroundId}|${event.process_code}|${event.event_type}|${event.event_timestamp}`;
 
   state = { ...state, events: [...state.events, event] };
   persistState();
@@ -363,6 +421,21 @@ function renderFlightDetails(container) {
 
   const row = document.createElement("div");
   row.className = "field-grid";
+
+  row.appendChild(
+    createInputField({
+      id: "airport-code",
+      label: "Airport (IATA)",
+      value: state.currentFlight.airport,
+      placeholder: "z.B. MUC",
+    })
+  );
+  const airportInput = row.querySelector("#airport-code");
+  if (airportInput) {
+    airportInput.addEventListener("input", (event) => {
+      setCurrentFlight("airport", event.target.value.toUpperCase());
+    });
+  }
 
   const directionSelect = document.createElement("div");
   directionSelect.className = "field-group";
@@ -458,7 +531,59 @@ function renderFlightDetails(container) {
     });
   }
 
+  observerRow.appendChild(
+    createInputField({
+      id: "from-airport",
+      label: "From Airport (IATA, optional)",
+      value: state.currentFlight.from_airport,
+      placeholder: "z.B. FRA",
+    })
+  );
+
+  observerRow.appendChild(
+    createInputField({
+      id: "to-airport",
+      label: "To Airport (IATA, optional)",
+      value: state.currentFlight.to_airport,
+      placeholder: "z.B. JFK",
+    })
+  );
+
+  const fromAirportInput = observerRow.querySelector("#from-airport");
+  if (fromAirportInput) {
+    fromAirportInput.addEventListener("input", (event) => {
+      setCurrentFlight("from_airport", event.target.value.toUpperCase());
+    });
+  }
+
+  const toAirportInput = observerRow.querySelector("#to-airport");
+  if (toAirportInput) {
+    toAirportInput.addEventListener("input", (event) => {
+      setCurrentFlight("to_airport", event.target.value.toUpperCase());
+    });
+  }
+
   panel.appendChild(observerRow);
+
+  const airlineRow = document.createElement("div");
+  airlineRow.className = "field-grid";
+  airlineRow.appendChild(
+    createInputField({
+      id: "airline-code",
+      label: "Airline-Code (optional)",
+      value: state.currentFlight.airline_code,
+      placeholder: "z.B. LH",
+    })
+  );
+
+  const airlineCodeInput = airlineRow.querySelector("#airline-code");
+  if (airlineCodeInput) {
+    airlineCodeInput.addEventListener("input", (event) => {
+      setCurrentFlight("airline_code", event.target.value.toUpperCase());
+    });
+  }
+
+  panel.appendChild(airlineRow);
 
   const locationRow = document.createElement("div");
   locationRow.className = "location-row";
@@ -768,6 +893,7 @@ function formatEventMessage(event) {
   const flightInfo = [event.flight_no || "-", event.direction || "-"].filter(Boolean).join(" | ");
   return `${event.event_type?.toUpperCase() || "-"} ${event.process_code} (${event.process_label}) | ` +
     `Flug: ${flightInfo || "-"} | ` +
+    `Airport: ${event.airport || "-"} | ` +
     `Stand: ${event.stand || "-"} Gate: ${event.gate || "-"} | ` +
     `Disruption: ${event.disruption_type || "-"}, ` +
     `Equipment: ${event.equipment_type || "-"}, ` +
@@ -820,15 +946,26 @@ function handleAction(process, action) {
 
 function toCsv() {
   const header = [
+    "process_id",
     "log_id",
+    "turnaround_id",
+    "instance_id",
+    "instance_fingerprint",
     "flight_no",
     "direction",
     "airport",
+    "from_airport",
+    "to_airport",
+    "airline_code",
     "stand",
     "gate",
     "process_code",
     "process_label",
     "event_type",
+    "start_time_abs",
+    "end_time_abs",
+    "duration_min",
+    "time_slot",
     "event_timestamp",
     "disruption_flag",
     "disruption_type",
@@ -844,6 +981,7 @@ function toCsv() {
     "location_longitude",
     "location_accuracy_m",
     "location_timestamp",
+    "quality_flag",
   ];
 
   const escapeValue = (value) => {
@@ -901,6 +1039,7 @@ function handleExport() {
 document.addEventListener("DOMContentLoaded", () => {
   state = loadState();
   renderApp();
+  requestLocation(true);
   populateLog();
   updateSessionSummary();
   setFeedback("");
