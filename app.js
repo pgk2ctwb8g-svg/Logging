@@ -29,6 +29,7 @@ const DEFAULT_STATE = {
     timestamp: "",
   },
   activeProcesses: {},
+  completedProcesses: [],
   events: [],
 };
 
@@ -66,11 +67,26 @@ function loadState() {
     if (stored) {
       const parsed = JSON.parse(stored);
       if (parsed && typeof parsed === "object") {
+        const normalizedActive = Object.fromEntries(
+          Object.entries(parsed.activeProcesses || {}).map(([code, value]) => {
+            const label = PROCESS_CODES.find((entry) => entry.code === code)?.label || code;
+            if (value && typeof value === "object") return [code, { label, ...value }];
+            return [code, { startedAt: value, label }];
+          })
+        );
+        const normalizedCompleted = Array.isArray(parsed.completedProcesses)
+          ? parsed.completedProcesses.map((entry) => ({
+              ...entry,
+              label: entry.label || PROCESS_CODES.find((item) => item.code === entry.code)?.label || entry.code,
+            }))
+          : [];
         return {
           ...DEFAULT_STATE,
           ...parsed,
           currentFlight: { ...DEFAULT_STATE.currentFlight, ...(parsed.currentFlight || {}) },
+          activeProcesses: normalizedActive,
           events: Array.isArray(parsed.events) ? parsed.events : [],
+          completedProcesses: normalizedCompleted,
         };
       }
     }
@@ -240,22 +256,46 @@ function highlightMissingFields(missingFields) {
 }
 
 function setActiveProcess(processCode, startedAt) {
+  const processMeta = PROCESS_CODES.find((entry) => entry.code === processCode);
   state = {
     ...state,
-    activeProcesses: { ...state.activeProcesses, [processCode]: startedAt ?? new Date().toISOString() },
+    activeProcesses: {
+      ...state.activeProcesses,
+      [processCode]: { startedAt: startedAt ?? new Date().toISOString(), label: processMeta?.label ?? processCode },
+    },
   };
   persistState();
   const app = document.getElementById("app");
   if (app) renderProcessCards(app);
+  renderProcessVisualization();
 }
 
 function clearActiveProcess(processCode) {
-  if (!state.activeProcesses?.[processCode]) return;
+  const active = state.activeProcesses?.[processCode];
+  if (!active) return;
+  const endTime = new Date().toISOString();
+  const durationMin =
+    active.startedAt && endTime ? Number(((new Date(endTime) - new Date(active.startedAt)) / 60000).toFixed(2)) : "";
+
+  const completedEntry = {
+    code: processCode,
+    label: active.label ?? processCode,
+    startedAt: active.startedAt,
+    endedAt: endTime,
+    durationMin,
+    completedAt: Date.now(),
+  };
+
   const { [processCode]: _removed, ...rest } = state.activeProcesses;
-  state = { ...state, activeProcesses: rest };
+  state = {
+    ...state,
+    activeProcesses: rest,
+    completedProcesses: [completedEntry, ...state.completedProcesses].slice(0, 30),
+  };
   persistState();
   const app = document.getElementById("app");
   if (app) renderProcessCards(app);
+  renderProcessVisualization();
 }
 
 function getMissingRequiredFields(eventPayload) {
@@ -299,7 +339,9 @@ function addEvent(eventPayload) {
 
   const startTimeAbs = isStart
     ? eventTimestamp
-    : state.activeProcesses[eventPayload.process_code] || "";
+    : state.activeProcesses[eventPayload.process_code]?.startedAt ||
+      state.activeProcesses[eventPayload.process_code] ||
+      "";
   const endTimeAbs = isEnd ? eventTimestamp : "";
 
   const durationMin =
@@ -985,7 +1027,7 @@ function renderProcessCards(container) {
       if (isActive) {
         const indicator = document.createElement("div");
         indicator.className = "process-indicator";
-        const since = state.activeProcesses[process.code];
+        const since = state.activeProcesses[process.code]?.startedAt || state.activeProcesses[process.code];
         const sinceLabel = since ? new Date(since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
         indicator.innerHTML = `<span class=\"pill running-pill\">Läuft${sinceLabel ? ` seit ${sinceLabel}` : ""}</span>`;
         card.appendChild(indicator);
@@ -1004,6 +1046,126 @@ function renderProcessCards(container) {
     container.insertBefore(panel, sessionPanel);
   } else {
     container.appendChild(panel);
+  }
+
+  renderProcessVisualization();
+}
+
+function renderProcessVisualization() {
+  const app = document.getElementById("app");
+  if (!app) return;
+
+  const existing = document.getElementById("process-visualization");
+  if (existing) existing.remove();
+
+  const panel = document.createElement("div");
+  panel.className = "card process-viz-card";
+  panel.id = "process-visualization";
+
+  const header = document.createElement("div");
+  header.className = "card-header";
+
+  const title = document.createElement("h2");
+  title.className = "card-title";
+  title.textContent = "Live Visualisierung";
+
+  const hint = document.createElement("p");
+  hint.className = "card-hint";
+  hint.textContent = "Aktive Prozesse laufen als animierte Puls-Icons ein, abgeschlossene gleiten in die Historie.";
+
+  header.appendChild(title);
+  header.appendChild(hint);
+  panel.appendChild(header);
+
+  const grid = document.createElement("div");
+  grid.className = "process-viz-grid";
+
+  const activeLane = document.createElement("div");
+  activeLane.className = "process-viz-lane";
+  activeLane.innerHTML = `<div class="lane-title">Laufend</div>`;
+  const activeRow = document.createElement("div");
+  activeRow.className = "token-row";
+
+  const activeEntries = Object.entries(state.activeProcesses || {}).sort(
+    ([_a, left], [_b, right]) => new Date(left?.startedAt || 0) - new Date(right?.startedAt || 0)
+  );
+
+  if (!activeEntries.length) {
+    const placeholder = document.createElement("div");
+    placeholder.className = "lane-placeholder";
+    placeholder.textContent = "Keine aktiven Prozesse";
+    activeRow.appendChild(placeholder);
+  } else {
+    activeEntries.forEach(([code, meta]) => {
+      const token = document.createElement("div");
+      token.className = "process-token is-active";
+      const startedLabel = meta?.startedAt
+        ? new Date(meta.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        : "";
+      token.innerHTML = `
+        <div class="process-icon">
+          <span class="process-icon-dot"></span>
+        </div>
+        <div class="process-token-body">
+          <div class="token-title">${code}</div>
+          <div class="token-subtitle">${meta?.label || "Aktiver Prozess"}</div>
+          <div class="token-meta">${startedLabel ? `seit ${startedLabel}` : ""}</div>
+        </div>
+      `;
+      activeRow.appendChild(token);
+    });
+  }
+
+  activeLane.appendChild(activeRow);
+  grid.appendChild(activeLane);
+
+  const completedLane = document.createElement("div");
+  completedLane.className = "process-viz-lane";
+  completedLane.innerHTML = `<div class="lane-title">Abgeschlossen</div>`;
+  const completedRow = document.createElement("div");
+  completedRow.className = "token-row token-row-completed";
+
+  if (!state.completedProcesses.length) {
+    const placeholder = document.createElement("div");
+    placeholder.className = "lane-placeholder";
+    placeholder.textContent = "Noch keine abgeschlossenen Prozesse";
+    completedRow.appendChild(placeholder);
+  } else {
+    state.completedProcesses.slice(0, 10).forEach((entry) => {
+      const isNew = Date.now() - entry.completedAt < 7000;
+      const token = document.createElement("div");
+      token.className = `process-token is-complete${isNew ? " is-new" : ""}`;
+      const endedLabel = entry?.endedAt
+        ? new Date(entry.endedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+        : "";
+      token.innerHTML = `
+        <div class="process-icon complete-icon">
+          <span class="process-icon-check">✓</span>
+        </div>
+        <div class="process-token-body">
+          <div class="token-title">${entry.code}</div>
+          <div class="token-subtitle">${entry.label || "Prozess abgeschlossen"}</div>
+          <div class="token-meta">${endedLabel ? `beendet um ${endedLabel}` : ""}${entry.durationMin ? ` · ${entry.durationMin} min` : ""}</div>
+        </div>
+      `;
+      completedRow.appendChild(token);
+    });
+  }
+
+  completedLane.appendChild(completedRow);
+  grid.appendChild(completedLane);
+
+  panel.appendChild(grid);
+
+  const processPanel = document.getElementById("process-panel");
+  const sessionPanel = document.getElementById("session-panel");
+
+  if (sessionPanel && app.contains(sessionPanel)) {
+    app.insertBefore(panel, sessionPanel);
+  } else if (processPanel && processPanel.nextSibling) {
+    app.insertBefore(panel, processPanel.nextSibling);
+  } else {
+    app.appendChild(panel);
   }
 }
 
