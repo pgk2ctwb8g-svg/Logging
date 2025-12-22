@@ -68,7 +68,7 @@ const DROPDOWN_OPTIONS = {
   ],
 };
 
-const NEAREST_AIRPORT_MAX_DISTANCE_KM = 150;
+const NEAREST_AIRPORT_MAX_DISTANCE_KM = 100;
 
 const AIRPORTS = [
   { iata: "MUC", name: "Munich", lat: 48.3538, lon: 11.7861 },
@@ -238,7 +238,7 @@ function requestLocation(options = {}) {
     },
     (error) => {
       console.warn("GPS Fehler", error);
-      setFeedback("GPS konnte nicht abgefragt werden.");
+      setFeedback("GPS konnte nicht abgefragt werden. Bitte Airport manuell eintragen.");
       if (isInitial && !state.currentFlight.airport) {
         promptForAirport();
       }
@@ -309,24 +309,35 @@ function findNearestAirport(latitude, longitude) {
 function updateAirportFromLocation() {
   if (!state.location.latitude || !state.location.longitude) return;
   const suggestion = findNearestAirport(Number(state.location.latitude), Number(state.location.longitude));
-  if (!suggestion) return;
+  if (!suggestion) {
+    window.alert("GPS gefunden, aber keine Airport-Daten verfügbar. Bitte Airport manuell eintragen.");
+    setFeedback("Keine Airport-Daten verfügbar. Bitte Airport manuell eintragen.");
+    return;
+  }
 
   console.log("Nearest airport suggestion:", suggestion, "distanceKm:", suggestion.distanceKm);
 
   if (suggestion.distanceKm <= NEAREST_AIRPORT_MAX_DISTANCE_KM) {
-    const manualAirportSet = state.currentFlight.airport && state.currentFlight.airport !== state.lastAirportSuggestion;
     const distanceLabel = `${Math.round(suggestion.distanceKm)} km`;
-    if (manualAirportSet) {
-      setFeedback(`GPS gefunden: nächster Airport ${suggestion.iata} (${distanceLabel}). Manueller Wert bleibt erhalten.`);
-      return;
+    state = { ...state, lastAirportSuggestion: suggestion.iata };
+    persistState();
+    const confirmed = window.confirm(
+      `GPS erkannt: Nächster Airport ist ${suggestion.iata} (${distanceLabel}). Soll der Wert übernommen werden?`
+    );
+    if (confirmed) {
+      setCurrentFlight("airport", suggestion.iata, { trackSuggestion: true });
+      setFeedback(`Airport übernommen: ${suggestion.iata} (${distanceLabel}).`);
+    } else {
+      setFeedback(`Airport-Vorschlag ${suggestion.iata} (${distanceLabel}) verworfen.`);
     }
-    setCurrentFlight("airport", suggestion.iata, { trackSuggestion: true });
-    setFeedback(`Airport automatisch gesetzt: ${suggestion.iata} (${distanceLabel}).`);
   } else {
+    state = { ...state, lastAirportSuggestion: "" };
+    persistState();
     if (!state.currentFlight.airport) {
       setCurrentFlight("airport", "", { trackSuggestion: false });
     }
-    setFeedback("GPS gefunden, aber kein naher Airport erkannt. Bitte manuell eintragen.");
+    window.alert("GPS gefunden, aber kein Airport im 100 km Umkreis erkannt. Bitte Airport manuell eintragen.");
+    setFeedback("Kein naher Airport erkannt. Bitte Airport manuell eintragen.");
   }
 }
 
