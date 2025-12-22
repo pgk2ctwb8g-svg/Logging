@@ -92,13 +92,59 @@ function setFeedback(message) {
   }
 }
 
+function clearFieldHighlights() {
+  ["flight-no", "flight-direction"].forEach((id) => {
+    const element = document.getElementById(id);
+    if (element) {
+      element.classList.remove("has-error");
+    }
+  });
+}
+
+function highlightMissingFields(missingFields) {
+  clearFieldHighlights();
+  const fieldIdMap = {
+    flight_no: "flight-no",
+    direction: "flight-direction",
+  };
+
+  missingFields.forEach((field) => {
+    const targetId = fieldIdMap[field];
+    if (!targetId) return;
+    const element = document.getElementById(targetId);
+    if (element) {
+      element.classList.add("has-error");
+    }
+  });
+}
+
+function getMissingRequiredFields(eventPayload) {
+  const missing = [];
+
+  const flightNo = eventPayload.flight_no ?? state.currentFlight.flight_no;
+  const direction = eventPayload.direction ?? state.currentFlight.direction;
+
+  if (!eventPayload.process_code) missing.push("process_code");
+  if (!eventPayload.event_type) missing.push("event_type");
+  if (!flightNo) missing.push("flight_no");
+  if (!direction) missing.push("direction");
+
+  return missing;
+}
+
 function addEvent(eventPayload) {
-  const missingFields = [];
-  if (!eventPayload.process_code) missingFields.push("process_code");
-  if (!eventPayload.event_type) missingFields.push("event_type");
+  const missingFields = getMissingRequiredFields(eventPayload);
 
   if (missingFields.length) {
-    setFeedback(`Bitte Pflichtfelder ausfüllen: ${missingFields.join(", ")}`);
+    const labels = {
+      process_code: "Prozess",
+      event_type: "Aktion",
+      flight_no: "Flugnummer",
+      direction: "Richtung",
+    };
+    const missingLabels = missingFields.map((field) => labels[field] || field).join(", ");
+    highlightMissingFields(missingFields);
+    setFeedback(`Bitte Pflichtfelder ausfüllen: ${missingLabels}`);
     return;
   }
 
@@ -133,6 +179,7 @@ function addEvent(eventPayload) {
   persistState();
   populateLog();
   updateSessionSummary();
+  clearFieldHighlights();
   setFeedback("");
 }
 
@@ -376,7 +423,16 @@ function renderSessionControls(container) {
   exportButton.disabled = state.events.length === 0;
   exportButton.addEventListener("click", handleExport);
 
+  const resetButton = document.createElement("button");
+  resetButton.className = "btn-neutral";
+  resetButton.textContent = "Session zurücksetzen";
+  resetButton.addEventListener("click", () => {
+    const confirmReset = window.confirm("Aktuelle Session wirklich löschen?");
+    if (confirmReset) resetSession();
+  });
+
   actions.appendChild(exportButton);
+  actions.appendChild(resetButton);
 
   panel.appendChild(header);
   panel.appendChild(actions);
@@ -434,8 +490,14 @@ function renderProcessCards(container) {
     endButton.textContent = "Ende";
     endButton.addEventListener("click", () => handleAction(process, "end"));
 
+    const instanceButton = document.createElement("button");
+    instanceButton.className = "btn-neutral";
+    instanceButton.textContent = "Instanz dokumentieren";
+    instanceButton.addEventListener("click", () => handleAction(process, "instance"));
+
     actions.appendChild(startButton);
     actions.appendChild(endButton);
+    actions.appendChild(instanceButton);
 
     card.appendChild(headerRow);
     card.appendChild(actions);
@@ -526,7 +588,9 @@ function populateLog() {
 function updateSessionSummary() {
   const summary = document.getElementById("session-summary");
   if (summary) {
-    summary.textContent = `${state.events.length} Events protokolliert`;
+    const activeSession = state.events.length > 0 || state.currentFlight.flight_no || state.currentFlight.direction;
+    const suffix = activeSession ? " – gespeicherte Session aktiv" : "";
+    summary.textContent = `${state.events.length} Events protokolliert${suffix}`;
   }
 
   const exportButton = document.getElementById("export-button");
@@ -598,6 +662,8 @@ function downloadCsv() {
   link.click();
 
   URL.revokeObjectURL(url);
+
+  return filename;
 }
 
 function resetSession() {
@@ -611,7 +677,8 @@ function resetSession() {
 
 function handleExport() {
   if (!state.events.length) return;
-  downloadCsv();
+  const filename = downloadCsv();
+  setFeedback(`CSV exportiert: ${filename}`);
   const shouldReset = window.confirm("Session löschen?");
   if (shouldReset) {
     resetSession();
