@@ -30,6 +30,7 @@ const DEFAULT_STATE = {
     timestamp: "",
   },
   lastAirportSuggestion: "",
+  lastAirportPromptLocationKey: "",
   flightSuggestions: [],
   flightSuggestionStatus: "idle",
   flightSuggestionError: "",
@@ -124,6 +125,7 @@ function loadState() {
           events: Array.isArray(parsed.events) ? parsed.events : [],
           completedProcesses: normalizedCompleted,
           lastAirportSuggestion: parsed.lastAirportSuggestion || "",
+          lastAirportPromptLocationKey: parsed.lastAirportPromptLocationKey || "",
           flightSuggestions: Array.isArray(parsed.flightSuggestions) ? parsed.flightSuggestions : [],
           flightSuggestionStatus: parsed.flightSuggestionStatus || "idle",
           flightSuggestionError: parsed.flightSuggestionError || "",
@@ -311,18 +313,27 @@ function updateAirportFromLocation() {
   const suggestion = findNearestAirport(Number(state.location.latitude), Number(state.location.longitude));
   if (!suggestion) return;
 
+  const locationPromptKey = `${state.location.latitude},${state.location.longitude}|${state.location.timestamp}`;
+  if (state.lastAirportPromptLocationKey === locationPromptKey) return;
+
   console.log("Nearest airport suggestion:", suggestion, "distanceKm:", suggestion.distanceKm);
 
   if (suggestion.distanceKm <= NEAREST_AIRPORT_MAX_DISTANCE_KM) {
-    const manualAirportSet = state.currentFlight.airport && state.currentFlight.airport !== state.lastAirportSuggestion;
     const distanceLabel = `${Math.round(suggestion.distanceKm)} km`;
-    if (manualAirportSet) {
-      setFeedback(`GPS gefunden: nächster Airport ${suggestion.iata} (${distanceLabel}). Manueller Wert bleibt erhalten.`);
-      return;
+    state = { ...state, lastAirportPromptLocationKey: locationPromptKey, lastAirportSuggestion: suggestion.iata };
+    persistState();
+    const confirmed = window.confirm(
+      `GPS erkannt: Nächster Airport ist ${suggestion.iata} (${distanceLabel}). Soll der Wert übernommen werden?`
+    );
+    if (confirmed) {
+      setCurrentFlight("airport", suggestion.iata, { trackSuggestion: true });
+      setFeedback(`Airport übernommen: ${suggestion.iata} (${distanceLabel}).`);
+    } else {
+      setFeedback(`Airport-Vorschlag ${suggestion.iata} (${distanceLabel}) verworfen.`);
     }
-    setCurrentFlight("airport", suggestion.iata, { trackSuggestion: true });
-    setFeedback(`Airport automatisch gesetzt: ${suggestion.iata} (${distanceLabel}).`);
   } else {
+    state = { ...state, lastAirportPromptLocationKey: locationPromptKey, lastAirportSuggestion: "" };
+    persistState();
     if (!state.currentFlight.airport) {
       setCurrentFlight("airport", "", { trackSuggestion: false });
     }
