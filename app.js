@@ -5,9 +5,16 @@ const PROCESS_CODES = [
   { code: "P04", label: "Gepäckabfertigung" },
 ];
 
-const STORAGE_KEY = "process-logger-state";
+const STORAGE_KEY = "mucsim_logger_state";
 
 const DEFAULT_STATE = {
+  currentFlight: {
+    flight_no: "",
+    direction: "",
+    stand: "",
+    gate: "",
+  },
+  observer_id: "",
   events: [],
 };
 
@@ -37,15 +44,20 @@ const DROPDOWN_OPTIONS = {
   ],
 };
 
-let state = loadState();
+let state = { ...DEFAULT_STATE };
 
 function loadState() {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed?.events)) {
-        return { ...DEFAULT_STATE, ...parsed };
+      if (parsed && typeof parsed === "object") {
+        return {
+          ...DEFAULT_STATE,
+          ...parsed,
+          currentFlight: { ...DEFAULT_STATE.currentFlight, ...(parsed.currentFlight || {}) },
+          events: Array.isArray(parsed.events) ? parsed.events : [],
+        };
       }
     }
   } catch (error) {
@@ -54,8 +66,74 @@ function loadState() {
   return { ...DEFAULT_STATE };
 }
 
-function saveState() {
+function persistState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function setCurrentFlight(field, value) {
+  if (!(field in state.currentFlight)) return;
+  state = {
+    ...state,
+    currentFlight: { ...state.currentFlight, [field]: value },
+  };
+  persistState();
+}
+
+function setObserver(value) {
+  state = { ...state, observer_id: value };
+  persistState();
+}
+
+function setFeedback(message) {
+  const feedback = document.getElementById("feedback");
+  if (feedback) {
+    feedback.textContent = message;
+    feedback.style.visibility = message ? "visible" : "hidden";
+  }
+}
+
+function addEvent(eventPayload) {
+  const missingFields = [];
+  if (!eventPayload.process_code) missingFields.push("process_code");
+  if (!eventPayload.event_type) missingFields.push("event_type");
+
+  if (missingFields.length) {
+    setFeedback(`Bitte Pflichtfelder ausfüllen: ${missingFields.join(", ")}`);
+    return;
+  }
+
+  const now = new Date();
+  const eventTimestamp = now.toISOString();
+  const disruptionFlag = eventPayload.disruption_flag ?? (eventPayload.disruption_type && eventPayload.disruption_type !== "none");
+
+  const event = {
+    log_id: `${now.getTime()}-${state.events.length + 1}`,
+    flight_no: eventPayload.flight_no ?? state.currentFlight.flight_no ?? "",
+    direction: eventPayload.direction ?? state.currentFlight.direction ?? "",
+    airport: "MUC",
+    stand: eventPayload.stand ?? state.currentFlight.stand ?? "",
+    gate: eventPayload.gate ?? state.currentFlight.gate ?? "",
+    process_code: eventPayload.process_code,
+    process_label: eventPayload.process_label ?? "",
+    event_type: eventPayload.event_type,
+    event_timestamp: eventTimestamp,
+    disruption_flag: Boolean(disruptionFlag),
+    disruption_type: eventPayload.disruption_type ?? "",
+    notes: eventPayload.notes ?? "",
+    staff_count: eventPayload.staff_count ?? "",
+    equipment_type: eventPayload.equipment_type ?? "",
+    pax_mix: eventPayload.pax_mix ?? "",
+    observer_id: eventPayload.observer_id ?? state.observer_id ?? "",
+    source: "HIWI_LOGGER_V1",
+    time_of_instancetaking: eventPayload.time_of_instancetaking ?? eventTimestamp,
+    observation_quality: eventPayload.observation_quality ?? "",
+  };
+
+  state = { ...state, events: [...state.events, event] };
+  persistState();
+  populateLog();
+  updateSessionSummary();
+  setFeedback("");
 }
 
 function createSelect(name, options, { optional = false } = {}) {
@@ -94,6 +172,127 @@ function renderDropdowns(container) {
 
   dropdownPanel.appendChild(row);
   container.appendChild(dropdownPanel);
+}
+
+function createInputField({ id, label, type = "text", value = "", placeholder = "" }) {
+  const wrapper = document.createElement("label");
+  wrapper.htmlFor = id;
+  wrapper.textContent = label;
+
+  const input = document.createElement("input");
+  input.id = id;
+  input.type = type;
+  input.value = value;
+  input.placeholder = placeholder;
+  input.autocomplete = "off";
+
+  wrapper.appendChild(input);
+  return wrapper;
+}
+
+function renderFlightDetails(container) {
+  const panel = document.createElement("div");
+  panel.className = "panel";
+
+  const title = document.createElement("h2");
+  title.textContent = "Flugdetails";
+  panel.appendChild(title);
+
+  const row = document.createElement("div");
+  row.className = "field-row";
+
+  const directionSelect = document.createElement("label");
+  directionSelect.textContent = "Direction";
+  const select = document.createElement("select");
+  select.id = "flight-direction";
+
+  [
+    { value: "", label: "Keine Angabe" },
+    { value: "arrival", label: "Arrival" },
+    { value: "departure", label: "Departure" },
+  ].forEach((option) => {
+    const opt = document.createElement("option");
+    opt.value = option.value;
+    opt.textContent = option.label;
+    select.appendChild(opt);
+  });
+
+  select.value = state.currentFlight.direction;
+  select.addEventListener("change", (event) => {
+    setCurrentFlight("direction", event.target.value);
+  });
+
+  directionSelect.appendChild(select);
+
+  row.appendChild(
+    createInputField({
+      id: "flight-no",
+      label: "Flight-No",
+      value: state.currentFlight.flight_no,
+      placeholder: "z.B. LH123",
+    })
+  );
+  const flightInput = row.querySelector("#flight-no");
+  if (flightInput) {
+    flightInput.addEventListener("input", (event) => {
+      setCurrentFlight("flight_no", event.target.value);
+    });
+  }
+
+  row.appendChild(directionSelect);
+  row.appendChild(
+    createInputField({
+      id: "flight-stand",
+      label: "Stand",
+      value: state.currentFlight.stand,
+      placeholder: "z.B. G12",
+    })
+  );
+  const standInput = row.querySelector("#flight-stand");
+  if (standInput) {
+    standInput.addEventListener("input", (event) => {
+      setCurrentFlight("stand", event.target.value);
+    });
+  }
+
+  row.appendChild(
+    createInputField({
+      id: "flight-gate",
+      label: "Gate",
+      value: state.currentFlight.gate,
+      placeholder: "z.B. K5",
+    })
+  );
+  const gateInput = row.querySelector("#flight-gate");
+  if (gateInput) {
+    gateInput.addEventListener("input", (event) => {
+      setCurrentFlight("gate", event.target.value);
+    });
+  }
+
+  panel.appendChild(row);
+
+  const observerRow = document.createElement("div");
+  observerRow.className = "field-row";
+  observerRow.appendChild(
+    createInputField({
+      id: "observer-id",
+      label: "Observer-ID",
+      value: state.observer_id,
+      placeholder: "Mitarbeiterkennung",
+    })
+  );
+
+  const observerInput = observerRow.querySelector("#observer-id");
+  if (observerInput) {
+    observerInput.addEventListener("input", (event) => {
+      setObserver(event.target.value);
+    });
+  }
+
+  panel.appendChild(observerRow);
+
+  container.appendChild(panel);
 }
 
 function renderSessionControls(container) {
@@ -209,6 +408,12 @@ function renderLogPanel(container) {
     title.textContent = "Aktivität";
     logPanel.appendChild(title);
 
+    const feedback = document.createElement("div");
+    feedback.id = "feedback";
+    feedback.className = "feedback muted";
+    feedback.style.visibility = "hidden";
+    logPanel.appendChild(feedback);
+
     const list = document.createElement("ul");
     list.id = "log-list";
     list.className = "muted";
@@ -228,6 +433,7 @@ function renderLogPanel(container) {
 function renderApp() {
   const app = document.getElementById("app");
   app.innerHTML = "";
+  renderFlightDetails(app);
   renderDropdowns(app);
   renderProcessCards(app);
   renderSessionControls(app);
@@ -244,7 +450,10 @@ function getSelectedValues() {
 }
 
 function formatEventMessage(event) {
-  return `${event.action.toUpperCase()} ${event.process_code} (${event.process_label}) | ` +
+  const flightInfo = [event.flight_no || "-", event.direction || "-"].filter(Boolean).join(" | ");
+  return `${event.event_type?.toUpperCase() || "-"} ${event.process_code} (${event.process_label}) | ` +
+    `Flug: ${flightInfo || "-"} | ` +
+    `Stand: ${event.stand || "-"} Gate: ${event.gate || "-"} | ` +
     `Disruption: ${event.disruption_type || "-"}, ` +
     `Equipment: ${event.equipment_type || "-"}, ` +
     `Pax-Mix: ${event.pax_mix || "-"}, ` +
@@ -276,30 +485,36 @@ function updateSessionSummary() {
 
 function handleAction(process, action) {
   const values = getSelectedValues();
-  const event = {
-    timestamp: new Date().toISOString(),
-    action,
+  addEvent({
     process_code: process.code,
     process_label: process.label,
+    event_type: action,
     ...values,
-  };
-
-  state.events.push(event);
-  saveState();
-  populateLog();
-  updateSessionSummary();
+  });
 }
 
 function toCsv() {
   const header = [
-    "timestamp",
-    "action",
+    "log_id",
+    "flight_no",
+    "direction",
+    "airport",
+    "stand",
+    "gate",
     "process_code",
     "process_label",
+    "event_type",
+    "event_timestamp",
+    "disruption_flag",
     "disruption_type",
+    "notes",
+    "staff_count",
     "equipment_type",
     "pax_mix",
     "observation_quality",
+    "observer_id",
+    "source",
+    "time_of_instancetaking",
   ];
 
   const escapeValue = (value) => {
@@ -337,6 +552,9 @@ function resetSession() {
   state = { ...DEFAULT_STATE };
   localStorage.removeItem(STORAGE_KEY);
   renderApp();
+  populateLog();
+  updateSessionSummary();
+  setFeedback("");
 }
 
 function handleExport() {
@@ -348,6 +566,10 @@ function handleExport() {
   }
 }
 
-renderApp();
-populateLog();
-updateSessionSummary();
+document.addEventListener("DOMContentLoaded", () => {
+  state = loadState();
+  renderApp();
+  populateLog();
+  updateSessionSummary();
+  setFeedback("");
+});
