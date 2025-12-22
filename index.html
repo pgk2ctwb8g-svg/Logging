@@ -7,44 +7,46 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header class="site-header">
-    <div class="brand">
-      <span aria-hidden="true">🗒️</span>
-      <h1>Logging Dashboard</h1>
-    </div>
-    <p class="tagline">Schnell Notizen festhalten und speichern</p>
-  </header>
+  <div class="page">
+    <header class="site-header">
+      <div class="brand">
+        <span aria-hidden="true">🗒️</span>
+        <h1>Logging Dashboard</h1>
+      </div>
+      <p class="tagline">Schnell Notizen festhalten und speichern</p>
+    </header>
 
-  <main class="layout">
-    <section class="panel" aria-labelledby="note-heading">
-      <div class="panel-header">
-        <h2 id="note-heading">Neue Notiz</h2>
-        <label class="status-toggle">
-          <input type="checkbox" id="status-toggle" checked />
-          Statushinweis anzeigen
+    <main class="layout">
+      <section class="panel" aria-labelledby="note-heading">
+        <div class="panel-header">
+          <h2 id="note-heading">Neue Notiz</h2>
+          <label class="status-toggle">
+            <input type="checkbox" id="status-toggle" checked />
+            Statushinweis anzeigen
+          </label>
+        </div>
+        <div class="status" id="status-text" role="status" aria-live="polite">
+          Zuletzt gespeichert: <span id="last-saved">Noch nichts gespeichert</span>
+        </div>
+        <label class="field">
+          <span>Text</span>
+          <textarea id="note-input" rows="5" placeholder="Notiz eingeben..."></textarea>
         </label>
-      </div>
-      <div class="status" id="status-text" role="status" aria-live="polite">
-        Zuletzt gespeichert: <span id="last-saved">-</span>
-      </div>
-      <label class="field">
-        <span>Text</span>
-        <textarea id="note-input" rows="5" placeholder="Notiz eingeben..."></textarea>
-      </label>
-      <div class="actions">
-        <button type="button" class="btn primary" id="save-button">Speichern</button>
-        <button type="button" class="btn" id="clear-button">Zurücksetzen</button>
-      </div>
-    </section>
+        <div class="actions">
+          <button type="button" class="btn primary" id="save-button">Speichern</button>
+          <button type="button" class="btn" id="clear-button">Zurücksetzen</button>
+        </div>
+      </section>
 
-    <section class="panel" aria-labelledby="recent-heading">
-      <div class="panel-header">
-        <h2 id="recent-heading">Letzte Einträge</h2>
-        <span class="count" id="entry-count">0 Einträge</span>
-      </div>
-      <ul class="card-list" id="entry-list" aria-live="polite" aria-label="Notizliste"></ul>
-    </section>
-  </main>
+      <section class="panel" aria-labelledby="recent-heading">
+        <div class="panel-header">
+          <h2 id="recent-heading">Letzte Einträge</h2>
+          <span class="count" id="entry-count">0 Einträge</span>
+        </div>
+        <ul class="card-list" id="entry-list" aria-live="polite" aria-label="Notizliste"></ul>
+      </section>
+    </main>
+  </div>
 
   <script src="app.js"></script>
 </body>
