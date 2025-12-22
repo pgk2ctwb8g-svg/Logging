@@ -5,6 +5,12 @@ const PROCESS_CODES = [
   { code: "P04", label: "Gepäckabfertigung" },
 ];
 
+const STORAGE_KEY = "process-logger-state";
+
+const DEFAULT_STATE = {
+  events: [],
+};
+
 const DROPDOWN_OPTIONS = {
   disruption_type: [
     { value: "none", label: "Keine Störung" },
@@ -30,6 +36,27 @@ const DROPDOWN_OPTIONS = {
     { value: "low", label: "Niedrig" },
   ],
 };
+
+let state = loadState();
+
+function loadState() {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed?.events)) {
+        return { ...DEFAULT_STATE, ...parsed };
+      }
+    }
+  } catch (error) {
+    console.warn("Konnte gespeicherte Session nicht laden.", error);
+  }
+  return { ...DEFAULT_STATE };
+}
+
+function saveState() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
 
 function createSelect(name, options, { optional = false } = {}) {
   const wrapper = document.createElement("label");
@@ -67,6 +94,44 @@ function renderDropdowns(container) {
 
   dropdownPanel.appendChild(row);
   container.appendChild(dropdownPanel);
+}
+
+function renderSessionControls(container) {
+  const panel = document.createElement("div");
+  panel.className = "panel";
+  panel.id = "session-panel";
+
+  const header = document.createElement("div");
+  header.style.display = "flex";
+  header.style.justifyContent = "space-between";
+  header.style.alignItems = "center";
+
+  const title = document.createElement("h2");
+  title.textContent = "Session";
+
+  const summary = document.createElement("span");
+  summary.id = "session-summary";
+  summary.className = "muted";
+  summary.textContent = `${state.events.length} Events protokolliert`;
+
+  header.appendChild(title);
+  header.appendChild(summary);
+
+  const actions = document.createElement("div");
+  actions.className = "button-row";
+
+  const exportButton = document.createElement("button");
+  exportButton.id = "export-button";
+  exportButton.className = "btn-export";
+  exportButton.textContent = "CSV Export";
+  exportButton.disabled = state.events.length === 0;
+  exportButton.addEventListener("click", handleExport);
+
+  actions.appendChild(exportButton);
+
+  panel.appendChild(header);
+  panel.appendChild(actions);
+  container.appendChild(panel);
 }
 
 function renderProcessCards(container) {
@@ -133,24 +198,7 @@ function renderProcessCards(container) {
   container.appendChild(panel);
 }
 
-function handleAction(process, action) {
-  const values = Object.fromEntries(
-    Object.keys(DROPDOWN_OPTIONS).map((key) => {
-      const select = document.querySelector(`select[name="${key}"]`);
-      return [key, select?.value ?? ""];
-    })
-  );
-
-  const message = `${action.toUpperCase()} ${process.code} (${process.label}) | ` +
-    `Disruption: ${values.disruption_type || "-"}, ` +
-    `Equipment: ${values.equipment_type || "-"}, ` +
-    `Pax-Mix: ${values.pax_mix || "-"}, ` +
-    `Observation: ${values.observation_quality || "-"}`;
-
-  logMessage(message);
-}
-
-function logMessage(text) {
+function renderLogPanel(container) {
   let logPanel = document.getElementById("log-panel");
   if (!logPanel) {
     logPanel = document.createElement("div");
@@ -171,13 +219,10 @@ function logMessage(text) {
     list.style.gap = "0.35rem";
     logPanel.appendChild(list);
 
-    document.getElementById("app").appendChild(logPanel);
+    container.appendChild(logPanel);
   }
 
-  const list = document.getElementById("log-list");
-  const item = document.createElement("li");
-  item.textContent = text;
-  list.prepend(item);
+  populateLog();
 }
 
 function renderApp() {
@@ -185,6 +230,124 @@ function renderApp() {
   app.innerHTML = "";
   renderDropdowns(app);
   renderProcessCards(app);
+  renderSessionControls(app);
+  renderLogPanel(app);
+}
+
+function getSelectedValues() {
+  return Object.fromEntries(
+    Object.keys(DROPDOWN_OPTIONS).map((key) => {
+      const select = document.querySelector(`select[name="${key}"]`);
+      return [key, select?.value ?? ""];
+    })
+  );
+}
+
+function formatEventMessage(event) {
+  return `${event.action.toUpperCase()} ${event.process_code} (${event.process_label}) | ` +
+    `Disruption: ${event.disruption_type || "-"}, ` +
+    `Equipment: ${event.equipment_type || "-"}, ` +
+    `Pax-Mix: ${event.pax_mix || "-"}, ` +
+    `Observation: ${event.observation_quality || "-"}`;
+}
+
+function populateLog() {
+  const list = document.getElementById("log-list");
+  if (!list) return;
+  list.innerHTML = "";
+  [...state.events].reverse().forEach((event) => {
+    const item = document.createElement("li");
+    item.textContent = formatEventMessage(event);
+    list.appendChild(item);
+  });
+}
+
+function updateSessionSummary() {
+  const summary = document.getElementById("session-summary");
+  if (summary) {
+    summary.textContent = `${state.events.length} Events protokolliert`;
+  }
+
+  const exportButton = document.getElementById("export-button");
+  if (exportButton) {
+    exportButton.disabled = state.events.length === 0;
+  }
+}
+
+function handleAction(process, action) {
+  const values = getSelectedValues();
+  const event = {
+    timestamp: new Date().toISOString(),
+    action,
+    process_code: process.code,
+    process_label: process.label,
+    ...values,
+  };
+
+  state.events.push(event);
+  saveState();
+  populateLog();
+  updateSessionSummary();
+}
+
+function toCsv() {
+  const header = [
+    "timestamp",
+    "action",
+    "process_code",
+    "process_label",
+    "disruption_type",
+    "equipment_type",
+    "pax_mix",
+    "observation_quality",
+  ];
+
+  const escapeValue = (value) => {
+    if (value == null) return "";
+    const stringValue = String(value);
+    if (stringValue.includes('"') || stringValue.includes(",") || stringValue.includes("\n")) {
+      return `"${stringValue.replace(/"/g, '""')}"`;
+    }
+    return stringValue;
+  };
+
+  const rows = state.events.map((event) => header.map((key) => escapeValue(event[key])));
+  return [header.join(","), ...rows.map((row) => row.join(","))].join("\n");
+}
+
+function downloadCsv() {
+  const csvContent = toCsv();
+  const blob = new Blob([csvContent], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+
+  const now = new Date();
+  const datePart = now.toISOString().slice(0, 10);
+  const timePart = `${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
+  const filename = `hiwi_log_${datePart}_${timePart}.csv`;
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+
+  URL.revokeObjectURL(url);
+}
+
+function resetSession() {
+  state = { ...DEFAULT_STATE };
+  localStorage.removeItem(STORAGE_KEY);
+  renderApp();
+}
+
+function handleExport() {
+  if (!state.events.length) return;
+  downloadCsv();
+  const shouldReset = window.confirm("Session löschen?");
+  if (shouldReset) {
+    resetSession();
+  }
 }
 
 renderApp();
+populateLog();
+updateSessionSummary();
