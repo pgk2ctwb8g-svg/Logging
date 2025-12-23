@@ -18,6 +18,7 @@ window.flightApiConfig = {
 Erwartet wird eine Antwort als Array oder `{ flights: [...] }` mit Feldern wie `flight_no`, `airline_code`, `airline`, `aircraft_type`, `direction`, `gate`, `stand`.
 
 Alternativ kannst du direkt in der UI im Abschnitt „Flugvorschläge (±30 Min)“ die Flug-API-URL und den optionalen Bearer-Token eintragen. Die App ruft dann live diesen Endpoint auf; wenn der Aufruf fehlschlägt oder kein Endpoint gesetzt ist, werden automatisch Sample-Daten angezeigt. Achte auf CORS-Freigaben, wenn du aus dem Browser heraus eine externe API nutzt.
+Die eingetragene API-URL samt Token wird im Browser gespeichert, damit du sie nicht bei jedem Öffnen erneut eingeben musst (lokales `localStorage`).
 
 ### Beispiel: Proxy für Flightradar & Co.
 Viele öffentliche Flugseiten blockieren direkte Browser-Zugriffe (CORS, Cookies, Rate-Limits). Baue deshalb einen kleinen Proxy, der die Daten serverseitig holt, glättet und ohne Auth nach außen reicht. Beispiel (Cloudflare Worker, stark vereinfacht – passe URL/Auth an die jeweilige Quelle an):
