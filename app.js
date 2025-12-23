@@ -835,7 +835,7 @@ function renderPrecheckScreen(container) {
   const hint = document.createElement("p");
   hint.className = "card-hint";
   hint.textContent =
-    "1) GPS holen (öffnet Flugliste), 2) Airport übernehmen (Fallback: MUC), 3) Flug auswählen für Auto-Vorbefüllung.";
+    "1) Airport setzen (Standard: MUC, manuell anpassbar), 2) optional GPS für Vorschlag, 3) Flüge laden und auswählen.";
 
   header.appendChild(title);
   header.appendChild(hint);
@@ -845,18 +845,18 @@ function renderPrecheckScreen(container) {
   steps.className = "precheck-steps";
   const stepData = [
     {
-      title: "GPS",
-      status: state.location.latitude && state.location.longitude ? "done" : "pending",
-      description: state.location.latitude && state.location.longitude ? "Koordinaten verfügbar" : "Noch nicht erfasst",
-    },
-    {
       title: "Airport",
       status: state.currentFlight.airport ? "done" : state.lastAirportSuggestion ? "action" : "pending",
       description: state.currentFlight.airport
         ? `gesetzt: ${state.currentFlight.airport}`
         : state.lastAirportSuggestion
           ? `Vorschlag: ${state.lastAirportSuggestion}`
-          : "noch offen",
+          : "Standard: MUC",
+    },
+    {
+      title: "GPS (optional)",
+      status: state.location.latitude && state.location.longitude ? "done" : "pending",
+      description: state.location.latitude && state.location.longitude ? "Koordinaten verfügbar" : "Kann nach Bedarf genutzt werden",
     },
     {
       title: "Flug-Vorschläge",
@@ -2353,13 +2353,13 @@ function handleStart() {
     started: true,
     precheckCompleted: false,
     flightDetailsEditable: false,
+    flightPickerOpen: false,
     autoFetchedAfterStart: false,
   };
   persistState();
   setCurrentFlight("airport", defaultAirport);
   applyStartMode(false);
   renderApp();
-  requestLocation({ autoFetch: true });
 }
 
 function renderApp() {
@@ -2554,9 +2554,6 @@ function handleExport() {
 document.addEventListener("DOMContentLoaded", () => {
   state = loadState();
   renderApp();
-  if (state.started) {
-    requestLocation({ autoFetch: true });
-  }
   populateLog();
   updateSessionSummary();
   setFeedback("");
