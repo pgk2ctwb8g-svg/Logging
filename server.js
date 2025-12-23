@@ -143,10 +143,10 @@ async function fetchOpenSky({ airport, direction, start, end }) {
   }
   const data = await response.json();
   const flights = Array.isArray(data) ? data : [];
-  return flights.map((entry) => mapOpenSky(entry, direction));
+  return flights.map((entry) => mapOpenSky(entry, direction, airport));
 }
 
-function mapOpenSky(entry, direction) {
+function mapOpenSky(entry, direction, airport) {
   const callsign = (entry.callsign || "").trim();
   const airlineCode = callsign ? callsign.slice(0, 3) : "";
   const departure = entry.estDepartureAirport || "";
@@ -160,6 +160,9 @@ function mapOpenSky(entry, direction) {
     direction,
     gate: "",
     stand: "",
+    airport,
+    from_airport: direction === "arrival" ? departure : airport,
+    to_airport: direction === "arrival" ? airport : arrival,
     description: buildOpenSkyDescription({ direction, departure, arrival, time: entry.lastSeen || entry.firstSeen }),
   };
 }
@@ -213,6 +216,9 @@ function mapAviationStack(entry, direction) {
     direction,
     gate: direction === "arrival" ? entry?.arrival?.gate || "" : entry?.departure?.gate || "",
     stand: "",
+    airport: direction === "arrival" ? entry?.arrival?.iata || "" : entry?.departure?.iata || "",
+    from_airport: entry?.departure?.iata || entry?.departure?.icao || "",
+    to_airport: entry?.arrival?.iata || entry?.arrival?.icao || "",
     description: buildAviationStackDescription(entry, direction),
   };
 }
@@ -290,6 +296,9 @@ function mapAerodatabox(entry, direction, airport) {
     direction,
     gate: movement?.gate || "",
     stand: "",
+    airport,
+    from_airport: fromAirport,
+    to_airport: toAirport,
     description: buildAerodataboxDescription({
       direction,
       fromAirport: direction === "arrival" ? fromAirport : airport,

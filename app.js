@@ -11,12 +11,13 @@ const STORAGE_KEY = "mucsim_logger_state";
 const STORAGE_KEY_API = "mucsim_logger_flight_api";
 
 const DEFAULT_STATE = {
+  started: false,
   currentFlight: {
     flight_no: "",
     direction: "",
     stand: "",
     gate: "",
-    airport: "",
+    airport: "MUC",
     from_airport: "",
     to_airport: "",
     airline_code: "",
@@ -99,6 +100,18 @@ const AIRPORTS = [
 
 let state = { ...DEFAULT_STATE };
 
+function getDefaultFlightApiUrl() {
+  try {
+    if (typeof window !== "undefined" && window.location?.origin) {
+      const base = window.location.origin.replace(/\/$/, "");
+      return `${base}/flights`;
+    }
+  } catch (error) {
+    console.warn("Konnte Default-API nicht ableiten.", error);
+  }
+  return "http://localhost:8788/flights";
+}
+
 function loadFlightApiConfig() {
   try {
     const stored = localStorage.getItem(STORAGE_KEY_API);
@@ -106,7 +119,7 @@ function loadFlightApiConfig() {
       const parsed = JSON.parse(stored);
       if (parsed && typeof parsed === "object") {
         return {
-          url: parsed.url || "",
+          url: parsed.url || getDefaultFlightApiUrl() || "",
           apiKey: parsed.apiKey || "",
         };
       }
@@ -114,7 +127,7 @@ function loadFlightApiConfig() {
   } catch (error) {
     console.warn("Konnte API-Config nicht laden.", error);
   }
-  return { url: "", apiKey: "" };
+  return { url: getDefaultFlightApiUrl() || "", apiKey: "" };
 }
 
 function persistFlightApiConfig(config) {
@@ -155,6 +168,7 @@ function loadState() {
         return {
           ...DEFAULT_STATE,
           ...parsed,
+          started: parsed.started ?? DEFAULT_STATE.started,
           currentFlight: { ...DEFAULT_STATE.currentFlight, ...(parsed.currentFlight || {}) },
           activeProcesses: normalizedActive,
           events: Array.isArray(parsed.events) ? parsed.events : [],
@@ -182,6 +196,7 @@ function loadState() {
       url: fallbackApiConfig.url || windowApiConfig.url || "",
       apiKey: fallbackApiConfig.apiKey || windowApiConfig.apiKey || "",
     },
+    started: false,
   };
 }
 
@@ -223,6 +238,21 @@ function clearFlightApiConfig() {
 function completePrecheck() {
   state = { ...state, precheckCompleted: true };
   persistState();
+}
+
+function applyStartMode(isStartMode) {
+  const body = document.body;
+  const shell = document.querySelector(".app-shell");
+  const header = document.querySelector(".app-header");
+  if (isStartMode) {
+    body?.classList.add("start-mode");
+    shell?.classList.add("start-mode");
+    header?.classList.add("is-hidden");
+  } else {
+    body?.classList.remove("start-mode");
+    shell?.classList.remove("start-mode");
+    header?.classList.remove("is-hidden");
+  }
 }
 
 function promptForAirport() {
@@ -1293,12 +1323,22 @@ function renderFlightSuggestions(container) {
       applyButton.type = "button";
       applyButton.textContent = "Flug übernehmen";
       applyButton.addEventListener("click", () => {
-        setCurrentFlight("flight_no", flight.flight_no || "");
-        setCurrentFlight("airline_code", flight.airline_code || "");
-        setCurrentFlight("aircraft_type", flight.aircraft_type || "");
-        if (flight.direction) setCurrentFlight("direction", flight.direction);
-        if (flight.gate) setCurrentFlight("gate", flight.gate);
-        if (flight.stand) setCurrentFlight("stand", flight.stand);
+        const flightFields = [
+          ["flight_no", flight.flight_no],
+          ["airline_code", flight.airline_code],
+          ["aircraft_type", flight.aircraft_type],
+          ["direction", flight.direction],
+          ["gate", flight.gate],
+          ["stand", flight.stand],
+          ["from_airport", flight.from_airport],
+          ["to_airport", flight.to_airport],
+          ["airport", flight.airport],
+        ];
+        flightFields.forEach(([field, value]) => {
+          if (value) {
+            setCurrentFlight(field, value);
+          }
+        });
         renderProcessCards(document.getElementById("app"));
         setFeedback(`Flug ${flight.flight_no || ""} übernommen.`);
       });
@@ -1328,6 +1368,9 @@ function buildSampleFlights(airport) {
       direction: state.currentFlight.direction || "departure",
       gate: "K5",
       stand: "G12",
+      from_airport: airport,
+      to_airport: "JFK",
+      airport,
       description: `Abflug in ${makeTimeLabel(15)} ab ${airport}.`,
     },
     {
@@ -1338,6 +1381,9 @@ function buildSampleFlights(airport) {
       direction: "arrival",
       gate: "L2",
       stand: "R4",
+      from_airport: "PMI",
+      to_airport: airport,
+      airport,
       description: `Ankunft gegen ${makeTimeLabel(-10)} an ${airport}.`,
     },
   ];
@@ -1403,7 +1449,7 @@ async function fetchFlightSuggestions(options = {}) {
 
   state = {
     ...state,
-    flightSuggestions: flights.slice(0, 10),
+    flightSuggestions: flights.slice(0, 8),
     flightSuggestionStatus: status,
     flightSuggestionError: errorMessage,
   };
@@ -1764,8 +1810,41 @@ function renderLogPanel(container) {
   populateLog();
 }
 
+function renderStartScreen(container) {
+  applyStartMode(true);
+  container.innerHTML = "";
+
+  const screen = document.createElement("div");
+  screen.className = "start-screen";
+
+  const button = document.createElement("button");
+  button.className = "start-button";
+  button.type = "button";
+  button.textContent = "Start";
+  button.addEventListener("click", () => handleStart());
+
+  screen.appendChild(button);
+  container.appendChild(screen);
+}
+
+function handleStart() {
+  const defaultAirport = state.currentFlight.airport || "MUC";
+  state = { ...state, started: true, precheckCompleted: false };
+  persistState();
+  setCurrentFlight("airport", defaultAirport);
+  applyStartMode(false);
+  renderApp();
+  requestLocation({ isInitial: true });
+}
+
 function renderApp() {
   const app = document.getElementById("app");
+  if (!state.started) {
+    renderStartScreen(app);
+    return;
+  }
+
+  applyStartMode(false);
   app.innerHTML = "";
   if (!state.precheckCompleted) {
     renderPrecheckScreen(app);
@@ -1949,7 +2028,9 @@ function handleExport() {
 document.addEventListener("DOMContentLoaded", () => {
   state = loadState();
   renderApp();
-  requestLocation({ isInitial: true });
+  if (state.started) {
+    requestLocation({ isInitial: true });
+  }
   populateLog();
   updateSessionSummary();
   setFeedback("");
