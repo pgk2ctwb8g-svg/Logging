@@ -250,21 +250,19 @@ function buildAviationStackDescription(entry, direction) {
 async function fetchAerodatabox({ airport, direction, start, end }) {
   const codeType = airport.length === 4 ? "icao" : "iata";
   const directionParam = direction === "arrival" ? "Arrival" : direction === "departure" ? "Departure" : "Both";
-  const { offsetMinutes, durationMinutes } = buildAerodataboxWindow(start, end);
+  const fromIso = formatAerodataboxTime(start);
+  const toIso = formatAerodataboxTime(end);
 
   const params = new URLSearchParams({
-    offsetMinutes: String(offsetMinutes),
-    durationMinutes: String(durationMinutes),
-    withLeg: "true",
     direction: directionParam,
-    withCancelled: "false",
-    withCodeshared: "true",
     withCargo: "false",
     withPrivate: "false",
+    withCancelled: "false",
+    withCodeshared: "true",
     withLocation: "false",
   });
 
-  const url = `${AERODATABOX_BASE_URL}/flights/airports/${codeType}/${airport}?${params.toString()}`;
+  const url = `${AERODATABOX_BASE_URL}/flights/airports/${codeType}/${airport}/${fromIso}/${toIso}?${params.toString()}`;
   const response = await fetch(url, {
     headers: {
       "X-RapidAPI-Key": AERODATABOX_API_KEY,
@@ -289,12 +287,9 @@ async function fetchAerodatabox({ airport, direction, start, end }) {
   return flights;
 }
 
-function buildAerodataboxWindow(start, end) {
-  const now = Math.floor(Date.now() / 1000);
-  const clampedEnd = Math.max(end, start + 60);
-  const offsetMinutes = Math.round((start - now) / 60);
-  const durationMinutes = Math.max(1, Math.ceil((clampedEnd - start) / 60));
-  return { offsetMinutes, durationMinutes };
+function formatAerodataboxTime(epochSeconds) {
+  const date = new Date(epochSeconds * 1000);
+  return date.toISOString().slice(0, 16);
 }
 
 function mapAerodatabox(entry, direction, airport) {
