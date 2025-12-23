@@ -113,10 +113,10 @@ const AIRPORTS = [
 ];
 
 let state = { ...DEFAULT_STATE };
-let scheduledPersistId = null;
 let locationRequestInFlight = false;
+let scheduledPersistId = null;
 
-function scheduleStatePersist(delay = 400) {
+function scheduleStatePersist(delay = 250) {
   clearTimeout(scheduledPersistId);
   scheduledPersistId = setTimeout(() => {
     persistState();
@@ -129,6 +129,10 @@ function cancelScheduledPersist() {
     clearTimeout(scheduledPersistId);
     scheduledPersistId = null;
   }
+}
+
+function persistStateDebounced(delay = 250) {
+  scheduleStatePersist(delay);
 }
 
 function getDefaultFlightApiUrl() {
@@ -270,7 +274,7 @@ function setCurrentFlight(field, value, options = {}) {
   } else if (deferPersist) {
     scheduleStatePersist();
   } else {
-    persistState();
+    persistStateDebounced();
   }
   syncFlightInputs();
   const continueButton = document.getElementById("precheck-continue-button");
@@ -285,7 +289,7 @@ function setCurrentFlight(field, value, options = {}) {
 
 function setObserver(value) {
   state = { ...state, observer_id: value };
-  persistState();
+  persistStateDebounced();
 }
 
 function setFlightApiConfig(field, value) {
@@ -294,7 +298,7 @@ function setFlightApiConfig(field, value) {
     ...state,
     flightApiConfig: { ...state.flightApiConfig, [field]: value },
   };
-  persistState();
+  persistStateDebounced();
 }
 
 function clearFlightApiConfig() {
@@ -346,7 +350,7 @@ function promptForAirport() {
 
 function setLocationStatus(status) {
   state = { ...state, locationStatus: status || "" };
-  persistState();
+  persistStateDebounced();
   updateLocationUi();
 }
 
