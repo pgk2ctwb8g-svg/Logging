@@ -1,9 +1,11 @@
+require("dotenv").config();
 const express = require("express");
 const fetch = require("node-fetch");
 
 const app = express();
 const PORT = process.env.PORT || 8788;
-const PROVIDER = (process.env.FLIGHT_PROVIDER || "opensky").toLowerCase();
+const DEFAULT_PROVIDER = process.env.AERODATABOX_API_KEY ? "aerodatabox" : "opensky";
+const PROVIDER = (process.env.FLIGHT_PROVIDER || DEFAULT_PROVIDER).toLowerCase();
 const OPEN_SKY_BASE_URL = process.env.OPEN_SKY_BASE_URL || "https://opensky-network.org/api";
 const AVIATIONSTACK_API_KEY = process.env.AVIATIONSTACK_API_KEY;
 const AERODATABOX_API_KEY = process.env.AERODATABOX_API_KEY;
