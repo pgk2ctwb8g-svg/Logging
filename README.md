@@ -57,16 +57,19 @@ export default {
 Diese Worker-URL trägst du dann in der UI als „Flug-API URL“ ein; optional kannst du einen Bearer-Token hinterlegen. Der Worker muss CORS erlauben, z.B. mit `Access-Control-Allow-Origin: *`.
 
 ## Eigener Proxy-Server (Express)
-Der Ordner enthält jetzt einen kleinen Proxy (`server.js`), der wahlweise OpenSky (ohne Key) oder AviationStack (mit Key) anspricht. Er nimmt `airport`, `start`, `end`, `direction` entgegen, setzt CORS-Header und liefert `{ flights: [...] }` zurück.
+Der Ordner enthält jetzt einen kleinen Proxy (`server.js`), der wahlweise OpenSky (ohne Key), AviationStack (mit Key) oder AeroDataBox über RapidAPI (mit Key) anspricht. Er nimmt `airport`, `start`, `end`, `direction` entgegen, setzt CORS-Header und liefert `{ flights: [...] }` zurück.
 
 ### Lokale Nutzung
 1. Abhängigkeiten installieren: `npm install`
-2. Optional: `export FLIGHT_PROVIDER=aviationstack` und `export AVIATIONSTACK_API_KEY=<dein-key>` für echte Airline-Daten. Standard ist `opensky` (nutzt ICAO, z.B. EDDM statt MUC).
+2. Optional:
+   - `export FLIGHT_PROVIDER=aviationstack` und `export AVIATIONSTACK_API_KEY=<dein-key>` für AviationStack.
+   - `export FLIGHT_PROVIDER=aerodatabox` und `export AERODATABOX_API_KEY=<rapidapi-key>` für AeroDataBox (RapidAPI). Optional kannst du `AERODATABOX_HOST` bzw. `AERODATABOX_BASE_URL` überschreiben, falls du einen anderen RapidAPI-Host nutzt.
+   - Standard ist `opensky` (nutzt ICAO, z.B. EDDM statt MUC).
 3. Starten: `npm start` (lauscht auf Port 8788).
 4. Test: `curl "http://localhost:8788/flights?airport=MUC&direction=departure"` – Zeitfenster wird automatisch auf ±30 Minuten gesetzt, wenn `start/end` fehlen.
 
 ### Deployment-Idee (Render / VM / Cloudflare)
-- **Render/VM**: Repo deployen, Node 18+, `PORT` durch Plattform gesetzt, `FLIGHT_PROVIDER` und `AVIATIONSTACK_API_KEY` als Secret hinterlegen.
+- **Render/VM**: Repo deployen, Node 18+, `PORT` durch Plattform gesetzt, `FLIGHT_PROVIDER` und den passenden API-Key (`AVIATIONSTACK_API_KEY` oder `AERODATABOX_API_KEY`) als Secret hinterlegen.
 - **Cloudflare Worker**: Falls du den Worker-Ansatz bevorzugst, kannst du die oben stehende Worker-Skizze nutzen oder den Express-Proxy in eine Worker-Route portieren. Wichtig: CORS `Access-Control-Allow-Origin: *` setzen und den API-Key als Secret speichern.
 
 ### In der UI nutzen
