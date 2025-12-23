@@ -101,7 +101,7 @@ function parseEpochSeconds(value) {
 
 function defaultWindow() {
   const now = Math.floor(Date.now() / 1000);
-  return { start: now - 30 * 60, end: now + 30 * 60 };
+  return { start: now - 15 * 60, end: now + 15 * 60 };
 }
 
 async function fetchFlights({ airport, direction, start, end, preferBoth }) {

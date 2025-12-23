@@ -437,6 +437,51 @@ button:focus-visible {
   background: #ffffff;
 }
 
+.flight-loaded-summary {
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 0.75rem;
+  background: #f8fafc;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.flight-loaded-title {
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.flight-loaded-list {
+  margin: 0.1rem 0 0;
+  padding-left: 1rem;
+  display: grid;
+  gap: 0.2rem;
+  color: var(--text);
+}
+
+.flight-loaded-list li strong {
+  margin-right: 0.25rem;
+}
+
+.flight-loaded-hint {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.missing-fields {
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 0.75rem;
+  background: #ffffff;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.missing-title {
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
 .muted {
   color: var(--muted);
   font-size: 0.95rem;
@@ -458,6 +503,21 @@ button:focus-visible {
   color: #075985;
   font-weight: 700;
   width: fit-content;
+}
+
+.flight-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+}
+
+.flight-stats > div {
+  background: #f1f5f9;
+  color: var(--text);
+  border-radius: 10px;
+  padding: 0.4rem 0.6rem;
+  font-weight: 700;
 }
 
 .log-list {
@@ -496,6 +556,11 @@ button:focus-visible {
   flex-direction: column;
   gap: 0.15rem;
   color: var(--muted);
+}
+
+.location-status {
+  font-size: 0.9rem;
+  color: var(--text);
 }
 
 .location-actions {
