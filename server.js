@@ -1,11 +1,16 @@
+require("dotenv").config();
 const express = require("express");
 const fetch = require("node-fetch");
 
 const app = express();
 const PORT = process.env.PORT || 8788;
-const PROVIDER = (process.env.FLIGHT_PROVIDER || "opensky").toLowerCase();
+const DEFAULT_PROVIDER = process.env.AERODATABOX_API_KEY ? "aerodatabox" : "opensky";
+const PROVIDER = (process.env.FLIGHT_PROVIDER || DEFAULT_PROVIDER).toLowerCase();
 const OPEN_SKY_BASE_URL = process.env.OPEN_SKY_BASE_URL || "https://opensky-network.org/api";
 const AVIATIONSTACK_API_KEY = process.env.AVIATIONSTACK_API_KEY;
+const AERODATABOX_API_KEY = process.env.AERODATABOX_API_KEY;
+const AERODATABOX_HOST = process.env.AERODATABOX_HOST || "aerodatabox.p.rapidapi.com";
+const AERODATABOX_BASE_URL = process.env.AERODATABOX_BASE_URL || `https://${AERODATABOX_HOST}`;
 
 const AIRPORT_IATA_TO_ICAO = {
   MUC: "EDDM",
@@ -51,6 +56,7 @@ app.get("/flights", async (req, res) => {
   const direction = normalizeDirection(req.query.direction);
   const start = parseEpochSeconds(req.query.start) ?? defaultWindow().start;
   const end = parseEpochSeconds(req.query.end) ?? defaultWindow().end;
+  const preferBoth = !req.query.direction || String(req.query.direction).toLowerCase() === "both";
 
   if (!airport) {
     return res.status(400).json({ error: "Missing airport query parameter." });
@@ -61,7 +67,7 @@ app.get("/flights", async (req, res) => {
   }
 
   try {
-    const flights = await fetchFlights({ airport, direction, start, end });
+    const flights = await fetchFlights({ airport, direction, start, end, preferBoth });
     return res.json({ flights });
   } catch (error) {
     console.error("Flight proxy error", error);
@@ -72,6 +78,7 @@ app.get("/flights", async (req, res) => {
 function normalizeDirection(direction) {
   if (!direction) return "departure";
   const value = String(direction).toLowerCase();
+  if (value === "both") return "both";
   return value === "arrival" ? "arrival" : "departure";
 }
 
@@ -97,7 +104,15 @@ function defaultWindow() {
   return { start: now - 30 * 60, end: now + 30 * 60 };
 }
 
-async function fetchFlights({ airport, direction, start, end }) {
+async function fetchFlights({ airport, direction, start, end, preferBoth }) {
+  if (PROVIDER === "aerodatabox") {
+    if (!AERODATABOX_API_KEY) {
+      throw new Error("AERODATABOX_API_KEY not set for aerodatabox provider");
+    }
+    const providerDirection = preferBoth ? "both" : direction;
+    return fetchAerodatabox({ airport, direction: providerDirection, start, end });
+  }
+
   if (PROVIDER === "aviationstack") {
     if (!AVIATIONSTACK_API_KEY) {
       throw new Error("AVIATIONSTACK_API_KEY not set for aviationstack provider");
@@ -211,6 +226,87 @@ function buildAviationStackDescription(entry, direction) {
     return `Anflug ${to || "(n/a)"} aus ${from || "Unbekannt"}${label ? `, ETA ${label}` : ""}.`;
   }
   return `Abflug ${from || "(n/a)"} nach ${to || "Unbekannt"}${label ? `, ETD ${label}` : ""}.`;
+}
+
+async function fetchAerodatabox({ airport, direction, start, end }) {
+  const codeType = airport.length === 4 ? "icao" : "iata";
+  const directionParam = direction === "arrival" ? "Arrival" : direction === "departure" ? "Departure" : "Both";
+  const windowStart = formatLocalIsoMinutes(start);
+  const windowEnd = formatLocalIsoMinutes(end);
+
+  const params = new URLSearchParams({
+    withLeg: "true",
+    direction: directionParam,
+    withCancelled: "false",
+    withCodeshared: "true",
+    withCargo: "false",
+    withPrivate: "false",
+    withLocation: "false",
+  });
+
+  const url = `${AERODATABOX_BASE_URL}/flights/airports/${codeType}/${airport}/${windowStart}/${windowEnd}?${params.toString()}`;
+  const response = await fetch(url, {
+    headers: {
+      "X-RapidAPI-Key": AERODATABOX_API_KEY,
+      "X-RapidAPI-Host": AERODATABOX_HOST,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`AeroDataBox responded with HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  const flights = [];
+
+  if (direction !== "arrival" && Array.isArray(data?.departures)) {
+    flights.push(...data.departures.map((entry) => mapAerodatabox(entry, "departure", airport)));
+  }
+  if (direction !== "departure" && Array.isArray(data?.arrivals)) {
+    flights.push(...data.arrivals.map((entry) => mapAerodatabox(entry, "arrival", airport)));
+  }
+
+  return flights;
+}
+
+function formatLocalIsoMinutes(epochSeconds) {
+  const date = new Date(epochSeconds * 1000);
+  return date.toISOString().slice(0, 16);
+}
+
+function mapAerodatabox(entry, direction, airport) {
+  const movement = direction === "arrival" ? entry.arrival : entry.departure;
+  const counterpart = direction === "arrival" ? entry.departure : entry.arrival;
+  const scheduledLocal = movement?.scheduledTime?.local || movement?.revisedTime?.local || "";
+  const status = entry.status || entry.codeshareStatus || "";
+  const fromAirport = counterpart?.airport?.iata || counterpart?.airport?.icao || "";
+  const toAirport = direction === "arrival" ? airport : counterpart?.airport?.iata || counterpart?.airport?.icao || "";
+
+  return {
+    flight_no: entry.number || entry.callSign || "",
+    airline: entry?.airline?.name || "",
+    airline_code: entry?.airline?.iata || entry?.airline?.icao || "",
+    aircraft_type: entry?.aircraft?.model || entry?.aircraft?.icao || entry?.aircraft?.reg || "",
+    direction,
+    gate: movement?.gate || "",
+    stand: "",
+    description: buildAerodataboxDescription({
+      direction,
+      fromAirport: direction === "arrival" ? fromAirport : airport,
+      toAirport: direction === "arrival" ? airport : toAirport,
+      scheduledLocal,
+      status,
+    }),
+  };
+}
+
+function buildAerodataboxDescription({ direction, fromAirport, toAirport, scheduledLocal, status }) {
+  const statusLabel = status ? ` (${status})` : "";
+  const timeLabel = scheduledLocal ? `, geplant ${scheduledLocal}` : "";
+  if (direction === "arrival") {
+    return `Anflug ${toAirport} aus ${fromAirport || "Unbekannt"}${timeLabel}${statusLabel}.`;
+  }
+  return `Abflug ${fromAirport} nach ${toAirport || "Unbekannt"}${timeLabel}${statusLabel}.`;
 }
 
 if (require.main === module) {
