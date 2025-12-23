@@ -200,6 +200,41 @@ textarea:focus {
   box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.15);
 }
 
+.field-error {
+  margin-top: 0.35rem;
+  color: #dc2626;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.is-loading {
+  position: relative;
+  color: transparent !important;
+  pointer-events: none;
+  min-height: 44px;
+}
+
+.is-loading::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  margin-top: -9px;
+  margin-left: -9px;
+  border-radius: 50%;
+  border: 2px solid rgba(15, 23, 42, 0.25);
+  border-top-color: var(--accent-strong);
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 textarea {
   min-height: 96px;
   resize: vertical;
