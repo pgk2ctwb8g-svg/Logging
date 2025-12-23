@@ -39,6 +39,8 @@ const DEFAULT_STATE = {
   flightSuggestions: [],
   flightSuggestionStatus: "idle",
   flightSuggestionError: "",
+  flightSuggestionSource: "unknown",
+  flightSuggestionAnalysis: "",
   flightApiConfig: {
     url: "",
     apiKey: "",
@@ -184,6 +186,8 @@ function loadState() {
           flightSuggestions: Array.isArray(parsed.flightSuggestions) ? parsed.flightSuggestions : [],
           flightSuggestionStatus: parsed.flightSuggestionStatus || "idle",
           flightSuggestionError: parsed.flightSuggestionError || "",
+          flightSuggestionSource: parsed.flightSuggestionSource || "unknown",
+          flightSuggestionAnalysis: parsed.flightSuggestionAnalysis || "",
           flightApiConfig: {
             url: storedApiConfig.url || parsed.flightApiConfig?.url || windowApiConfig.url || "",
             apiKey: storedApiConfig.apiKey || parsed.flightApiConfig?.apiKey || windowApiConfig.apiKey || "",
@@ -1242,6 +1246,8 @@ function renderFlightSuggestions(container) {
       flightSuggestions: [],
       flightSuggestionStatus: "idle",
       flightSuggestionError: "",
+      flightSuggestionSource: "unknown",
+      flightSuggestionAnalysis: "",
       flightPickerOpen: false,
     };
     persistState();
@@ -1260,17 +1266,32 @@ function renderFlightSuggestions(container) {
   const apiSource = state.flightApiConfig.url
     ? `Quelle: ${state.flightApiConfig.url}${state.flightApiConfig.apiKey ? " (Bearer Token gesetzt)" : ""}`
     : "Quelle: Sample-Daten (kein API-Endpoint hinterlegt)";
-  status.textContent =
+  const statusLabel =
     state.flightSuggestionStatus === "loading"
       ? "Flüge werden geladen..."
       : state.flightSuggestionStatus === "loading_auto"
         ? "Flüge werden automatisch geladen..."
-      : state.flightSuggestionStatus === "error"
-        ? `Fehler beim Laden: ${state.flightSuggestionError || "unbekannt"}`
-        : state.currentFlight.airport
-          ? `Airport: ${state.currentFlight.airport}. Ladezeitraum: jetzt ±30 Min. ${apiSource}`
-          : `Bitte zuerst Airport setzen, um Vorschläge zu laden. ${apiSource}`;
+        : state.flightSuggestionStatus === "error"
+          ? `Fehler beim Laden: ${state.flightSuggestionError || "unbekannt"}`
+          : state.currentFlight.airport
+            ? `Airport: ${state.currentFlight.airport}. Ladezeitraum: jetzt ±30 Min. ${apiSource}`
+            : `Bitte zuerst Airport setzen, um Vorschläge zu laden. ${apiSource}`;
+  status.textContent = statusLabel;
   panel.appendChild(status);
+
+  const analysis = document.createElement("div");
+  analysis.className = "card-hint";
+  const sourceLabelMap = {
+    api: "API-Daten",
+    sample: "Samples (kein API)",
+    sample_fallback: "Samples (API-Fallback)",
+    unknown: "unbekannt",
+  };
+  const sourceLabel = sourceLabelMap[state.flightSuggestionSource] || "unbekannt";
+  analysis.textContent = state.flightSuggestionAnalysis
+    ? `API-Status: ${state.flightSuggestionAnalysis} Quelle: ${sourceLabel}.`
+    : `API-Status: Noch keine Abfrage durchgeführt. Quelle: ${sourceLabel}.`;
+  panel.appendChild(analysis);
 
   const apiBadge = document.createElement("div");
   apiBadge.className = "api-badge";
@@ -1550,6 +1571,8 @@ async function fetchFlightSuggestions(options = {}) {
     ...state,
     flightSuggestionStatus: source === "auto" ? "loading_auto" : "loading",
     flightSuggestionError: "",
+    flightSuggestionSource: "unknown",
+    flightSuggestionAnalysis: "",
     flightPickerOpen: false,
   };
   persistState();
@@ -1565,8 +1588,11 @@ async function fetchFlightSuggestions(options = {}) {
   let flights = [];
   let status = "idle";
   let errorMessage = "";
+  let sourceLabel = "sample";
+  let analysis = "";
 
   if (config?.url) {
+    sourceLabel = "api";
     try {
       const params = new URLSearchParams({
         airport: state.currentFlight.airport,
@@ -1587,11 +1613,21 @@ async function fetchFlightSuggestions(options = {}) {
           : Array.isArray(data)
             ? data
             : [];
+      analysis = flights.length
+        ? `API erfolgreich: ${flights.length} Flüge geladen.`
+        : "API antwortete ohne Flüge – fallback auf Samples.";
+      if (!flights.length) {
+        sourceLabel = "sample_fallback";
+      }
     } catch (error) {
       console.warn("Konnte Flug-API nicht laden, fallback auf Sample.", error);
       status = "error";
       errorMessage = error.message || "API Fehler";
+      sourceLabel = "sample_fallback";
+      analysis = `API-Fehler: ${error.message || "unbekannt"}. Nutze Samples.`;
     }
+  } else {
+    analysis = "Keine API-URL gesetzt – nutze Samples.";
   }
 
   if (!flights.length) {
@@ -1603,6 +1639,8 @@ async function fetchFlightSuggestions(options = {}) {
     flightSuggestions: flights.slice(0, 8),
     flightSuggestionStatus: status,
     flightSuggestionError: errorMessage,
+    flightSuggestionSource: sourceLabel,
+    flightSuggestionAnalysis: analysis,
     flightPickerOpen: openPicker && flights.length > 0,
   };
   persistState();
