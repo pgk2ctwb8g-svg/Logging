@@ -113,6 +113,23 @@ const AIRPORTS = [
 ];
 
 let state = { ...DEFAULT_STATE };
+let scheduledPersistId = null;
+let locationRequestInFlight = false;
+
+function scheduleStatePersist(delay = 400) {
+  clearTimeout(scheduledPersistId);
+  scheduledPersistId = setTimeout(() => {
+    persistState();
+    scheduledPersistId = null;
+  }, delay);
+}
+
+function cancelScheduledPersist() {
+  if (scheduledPersistId) {
+    clearTimeout(scheduledPersistId);
+    scheduledPersistId = null;
+  }
+}
 
 function getDefaultFlightApiUrl() {
   try {
@@ -241,13 +258,29 @@ function persistState() {
 
 function setCurrentFlight(field, value, options = {}) {
   if (!(field in state.currentFlight)) return;
+  const { trackSuggestion, persistNow, deferPersist } = options;
   state = {
     ...state,
     currentFlight: { ...state.currentFlight, [field]: value },
-    ...(options.trackSuggestion ? { lastAirportSuggestion: value || "" } : {}),
+    ...(trackSuggestion ? { lastAirportSuggestion: value || "" } : {}),
   };
-  persistState();
+  if (persistNow) {
+    cancelScheduledPersist();
+    persistState();
+  } else if (deferPersist) {
+    scheduleStatePersist();
+  } else {
+    persistState();
+  }
   syncFlightInputs();
+  const continueButton = document.getElementById("precheck-continue-button");
+  if (continueButton) continueButton.disabled = !state.currentFlight.airport;
+  if (state.currentFlight.airport) {
+    const airportError = document.getElementById("precheck-airport-error");
+    const airportInput = document.getElementById("precheck-airport");
+    if (airportError) airportError.style.display = "none";
+    if (airportInput) airportInput.classList.remove("has-error");
+  }
 }
 
 function setObserver(value) {
@@ -330,7 +363,6 @@ function setLocation({ latitude, longitude, accuracy, timestamp, statusMessage }
   };
   persistState();
   updateLocationUi();
-  setPrecheckFeedback("");
   updateAirportFromLocation();
 }
 
@@ -360,10 +392,15 @@ function triggerAutoFlightFetch() {
 function requestLocation(options = {}) {
   const { buttonId, onSuccess, onFailure, autoFetch } = typeof options === "boolean" ? {} : options ?? {};
   const button = document.getElementById(buttonId || "location-button");
+  if (locationRequestInFlight) {
+    setPrecheckFeedback("GPS-Abfrage läuft noch – bitte warten.");
+    return;
+  }
+
   if (!navigator.geolocation) {
     const unsupportedMessage = "GPS wird vom Browser nicht unterstützt.";
     setFeedback(unsupportedMessage);
-    setPrecheckFeedback(unsupportedMessage);
+    setPrecheckFeedback("GPS nicht verfügbar – bitte Airport manuell setzen.");
     setLocationStatus("GPS nicht verfügbar – bitte Airport manuell setzen.");
     ensureAirportFallback();
     if (autoFetch) triggerAutoFlightFetch();
@@ -371,11 +408,14 @@ function requestLocation(options = {}) {
     return;
   }
 
-  setPrecheckFeedback("GPS wird automatisch abgefragt...");
+  locationRequestInFlight = true;
+  setPrecheckFeedback("GPS wird abgefragt...");
   setLocationStatus("GPS-Abfrage läuft...");
 
   if (button) {
     button.disabled = true;
+    button.classList.add("is-loading");
+    if (!button.dataset.originalLabel) button.dataset.originalLabel = button.textContent;
     button.textContent = "Hole GPS...";
   }
 
@@ -391,26 +431,30 @@ function requestLocation(options = {}) {
         statusMessage: `GPS gefunden${accuracy != null ? ` (${Math.round(accuracy)} m)` : ""}.`,
       });
       setFeedback("GPS aktualisiert.");
-      setPrecheckFeedback("GPS gefunden. Airport wird automatisch gesetzt, falls erkannt.");
+      setPrecheckFeedback("GPS gesetzt – suche nächsten Airport.");
       if (autoFetch) triggerAutoFlightFetch();
       if (typeof onSuccess === "function") onSuccess();
       if (button) {
         button.disabled = false;
-        button.textContent = "GPS aktualisieren";
+        button.classList.remove("is-loading");
+        button.textContent = button.dataset.originalLabel || "GPS aktualisieren";
       }
+      locationRequestInFlight = false;
     },
     (error) => {
       console.warn("GPS Fehler", error);
       setFeedback("GPS konnte nicht abgefragt werden. Bitte Airport manuell eintragen.");
-      setPrecheckFeedback("GPS nicht gefunden – Standard MUC nutzen oder Airport manuell setzen.");
+      setPrecheckFeedback("GPS fehlgeschlagen – bitte Airport manuell setzen.");
       setLocationStatus("GPS nicht gefunden – nutze Standard MUC.");
       ensureAirportFallback();
       if (autoFetch) triggerAutoFlightFetch();
       if (typeof onFailure === "function") onFailure();
       if (button) {
         button.disabled = false;
-        button.textContent = "GPS aktualisieren";
+        button.classList.remove("is-loading");
+        button.textContent = button.dataset.originalLabel || "GPS aktualisieren";
       }
+      locationRequestInFlight = false;
     },
     { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
   );
@@ -491,6 +535,7 @@ function updateAirportFromLocation() {
   if (!suggestion) {
     ensureAirportFallback();
     setFeedback("Keine Airport-Daten verfügbar. MUC als Fallback gesetzt.");
+    setPrecheckFeedback("Kein Airport gefunden – Fallback MUC gesetzt.");
     return;
   }
 
@@ -505,11 +550,13 @@ function updateAirportFromLocation() {
     persistState();
     setCurrentFlight("airport", suggestion.iata, { trackSuggestion: true });
     setFeedback(`Airport übernommen: ${suggestion.iata} (${distanceLabel}).`);
+    setPrecheckFeedback(`Airport-Vorschlag übernommen: ${suggestion.iata} (${distanceLabel}).`);
   } else {
     state = { ...state, lastAirportSuggestion: "" };
     persistState();
     ensureAirportFallback();
     setFeedback("Kein naher Airport erkannt. MUC als Fallback gesetzt.");
+    setPrecheckFeedback("Kein naher Airport erkannt – MUC als Fallback gesetzt.");
   }
 }
 
@@ -899,6 +946,15 @@ function renderPrecheckScreen(container) {
       placeholder: "z.B. MUC",
     })
   );
+  const airportWrapper = grid.querySelector("#precheck-airport")?.closest(".field-group");
+  if (airportWrapper) {
+    const airportError = document.createElement("div");
+    airportError.id = "precheck-airport-error";
+    airportError.className = "field-error";
+    airportError.textContent = "Airport fehlt – bitte IATA-Code eingeben.";
+    airportError.style.display = "none";
+    airportWrapper.appendChild(airportError);
+  }
 
   const directionSelect = document.createElement("div");
   directionSelect.className = "field-group";
@@ -966,7 +1022,23 @@ function renderPrecheckScreen(container) {
 
   if (airportInput) {
     airportInput.addEventListener("input", (event) => {
-      setCurrentFlight("airport", event.target.value.toUpperCase());
+      const value = event.target.value.toUpperCase();
+      setCurrentFlight("airport", value, { deferPersist: true });
+      const hasAirport = Boolean(value.trim());
+      if (continueButton) continueButton.disabled = !hasAirport;
+      const airportError = document.getElementById("precheck-airport-error");
+      if (airportError) airportError.style.display = hasAirport ? "none" : airportError.style.display;
+      airportInput.classList.toggle("has-error", !hasAirport && airportError?.style.display === "block");
+    });
+    airportInput.addEventListener("blur", (event) => {
+      const value = event.target.value.toUpperCase().trim();
+      setCurrentFlight("airport", value, { persistNow: true });
+      const hasAirport = Boolean(value);
+      if (continueButton) continueButton.disabled = !hasAirport;
+      const airportError = document.getElementById("precheck-airport-error");
+      if (airportError) airportError.style.display = hasAirport ? "none" : airportError.style.display;
+      airportInput.classList.toggle("has-error", !hasAirport && airportError?.style.display === "block");
+      event.target.value = value;
     });
   }
 
@@ -986,16 +1058,22 @@ function renderPrecheckScreen(container) {
   }
 
   if (continueButton) {
+    continueButton.disabled = !state.currentFlight.airport;
     continueButton.addEventListener("click", () => {
+      const airportError = document.getElementById("precheck-airport-error");
       if (!state.currentFlight.airport) {
-        setPrecheckFeedback("Bitte zuerst den Airport setzen (Standard: MUC).");
+        if (airportError) airportError.style.display = "block";
+        if (airportInput) airportInput.classList.add("has-error");
+        setPrecheckFeedback("Airport fehlt – bitte IATA-Code setzen.");
         return;
       }
+      if (airportError) airportError.style.display = "none";
+      if (airportInput) airportInput.classList.remove("has-error");
 
       if (!state.location.latitude || !state.location.longitude) {
-        setPrecheckFeedback("GPS fehlt – nutze Standard-Angaben oder setze den Airport manuell.");
+        setPrecheckFeedback("GPS fehlt – bitte Airport nutzen oder erneut abfragen.");
       } else {
-        setPrecheckFeedback("");
+        setPrecheckFeedback("Start-Check erledigt – Daten sind gesetzt.");
       }
 
       completePrecheck();
