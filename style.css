@@ -78,6 +78,71 @@ body {
   font-size: 0.9rem;
 }
 
+.precheck-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.6rem;
+  margin-top: -0.35rem;
+}
+
+.precheck-step {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.65rem 0.75rem;
+  background: #f8fafc;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.precheck-step-action {
+  border-color: #f97316;
+  background: #fff7ed;
+}
+
+.precheck-step-done {
+  border-color: #86efac;
+  background: #ecfdf3;
+}
+
+.step-badge {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: #e2e8f0;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.precheck-step-done .step-badge {
+  background: #bbf7d0;
+  color: #14532d;
+}
+
+.precheck-step-action .step-badge {
+  background: #fed7aa;
+  color: #9a3412;
+}
+
+.step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.step-title {
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.step-desc {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .field-grid {
   display: grid;
   grid-template-columns: 1fr;
@@ -221,6 +286,18 @@ button:focus-visible {
   font-weight: 600;
 }
 
+.api-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: 10px;
+  background: #e0f2fe;
+  color: #075985;
+  font-weight: 700;
+  width: fit-content;
+}
+
 .log-list {
   margin: 0;
   padding-left: 1.1rem;
@@ -263,6 +340,13 @@ button:focus-visible {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 0.4rem;
+}
+
+.ghost-btn {
+  background: transparent;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  box-shadow: none;
 }
 
 .process-card.is-active {

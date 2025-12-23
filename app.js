@@ -8,6 +8,7 @@ const PROCESS_CODES = [
 ];
 
 const STORAGE_KEY = "mucsim_logger_state";
+const STORAGE_KEY_API = "mucsim_logger_flight_api";
 
 const DEFAULT_STATE = {
   currentFlight: {
@@ -98,9 +99,43 @@ const AIRPORTS = [
 
 let state = { ...DEFAULT_STATE };
 
+function loadFlightApiConfig() {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY_API);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (parsed && typeof parsed === "object") {
+        return {
+          url: parsed.url || "",
+          apiKey: parsed.apiKey || "",
+        };
+      }
+    }
+  } catch (error) {
+    console.warn("Konnte API-Config nicht laden.", error);
+  }
+  return { url: "", apiKey: "" };
+}
+
+function persistFlightApiConfig(config) {
+  try {
+    localStorage.setItem(
+      STORAGE_KEY_API,
+      JSON.stringify({
+        url: config?.url || "",
+        apiKey: config?.apiKey || "",
+      })
+    );
+  } catch (error) {
+    console.warn("Konnte API-Config nicht speichern.", error);
+  }
+}
+
 function loadState() {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
+    const storedApiConfig = loadFlightApiConfig();
+    const windowApiConfig = typeof window !== "undefined" ? window.flightApiConfig || {} : {};
     if (stored) {
       const parsed = JSON.parse(stored);
       if (parsed && typeof parsed === "object") {
@@ -130,8 +165,8 @@ function loadState() {
           flightSuggestionStatus: parsed.flightSuggestionStatus || "idle",
           flightSuggestionError: parsed.flightSuggestionError || "",
           flightApiConfig: {
-            url: parsed.flightApiConfig?.url || "",
-            apiKey: parsed.flightApiConfig?.apiKey || "",
+            url: storedApiConfig.url || parsed.flightApiConfig?.url || windowApiConfig.url || "",
+            apiKey: storedApiConfig.apiKey || parsed.flightApiConfig?.apiKey || windowApiConfig.apiKey || "",
           },
         };
       }
@@ -139,11 +174,20 @@ function loadState() {
   } catch (error) {
     console.warn("Konnte gespeicherte Session nicht laden.", error);
   }
-  return { ...DEFAULT_STATE };
+  const fallbackApiConfig = loadFlightApiConfig();
+  const windowApiConfig = typeof window !== "undefined" ? window.flightApiConfig || {} : {};
+  return {
+    ...DEFAULT_STATE,
+    flightApiConfig: {
+      url: fallbackApiConfig.url || windowApiConfig.url || "",
+      apiKey: fallbackApiConfig.apiKey || windowApiConfig.apiKey || "",
+    },
+  };
 }
 
 function persistState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  persistFlightApiConfig(state.flightApiConfig);
 }
 
 function setCurrentFlight(field, value, options = {}) {
@@ -168,6 +212,11 @@ function setFlightApiConfig(field, value) {
     ...state,
     flightApiConfig: { ...state.flightApiConfig, [field]: value },
   };
+  persistState();
+}
+
+function clearFlightApiConfig() {
+  state = { ...state, flightApiConfig: { url: "", apiKey: "" } };
   persistState();
 }
 
@@ -620,11 +669,59 @@ function renderPrecheckScreen(container) {
 
   const hint = document.createElement("p");
   hint.className = "card-hint";
-  hint.textContent = "Bevor Prozesse gestartet werden können, bitte Basisdaten und Standort erfassen.";
+  hint.textContent =
+    "1) GPS holen, 2) Airport übernehmen (Fallback: manuell), 3) Flüge laden für automatische Vorbefüllung.";
 
   header.appendChild(title);
   header.appendChild(hint);
   panel.appendChild(header);
+
+  const steps = document.createElement("div");
+  steps.className = "precheck-steps";
+  const stepData = [
+    {
+      title: "GPS",
+      status: state.location.latitude && state.location.longitude ? "done" : "pending",
+      description: state.location.latitude && state.location.longitude ? "Koordinaten verfügbar" : "Noch nicht erfasst",
+    },
+    {
+      title: "Airport",
+      status: state.currentFlight.airport ? "done" : state.lastAirportSuggestion ? "action" : "pending",
+      description: state.currentFlight.airport
+        ? `gesetzt: ${state.currentFlight.airport}`
+        : state.lastAirportSuggestion
+          ? `Vorschlag: ${state.lastAirportSuggestion}`
+          : "noch offen",
+    },
+    {
+      title: "Flug-Vorschläge",
+      status: state.flightSuggestions.length ? "done" : "pending",
+      description: state.flightSuggestions.length ? "Liste geladen" : "nach Airport laden",
+    },
+  ];
+
+  stepData.forEach((entry, index) => {
+    const item = document.createElement("div");
+    item.className = `precheck-step precheck-step-${entry.status}`;
+    const badge = document.createElement("div");
+    badge.className = "step-badge";
+    badge.textContent = index + 1;
+    const body = document.createElement("div");
+    body.className = "step-body";
+    const stepTitle = document.createElement("div");
+    stepTitle.className = "step-title";
+    stepTitle.textContent = entry.title;
+    const stepDesc = document.createElement("div");
+    stepDesc.className = "step-desc";
+    stepDesc.textContent = entry.description;
+    body.appendChild(stepTitle);
+    body.appendChild(stepDesc);
+    item.appendChild(badge);
+    item.appendChild(body);
+    steps.appendChild(item);
+  });
+
+  panel.appendChild(steps);
 
   const grid = document.createElement("div");
   grid.className = "field-grid";
@@ -696,6 +793,14 @@ function renderPrecheckScreen(container) {
     </div>
   `;
 
+  const manualAirportButton = document.createElement("button");
+  manualAirportButton.className = "btn-neutral ghost-btn";
+  manualAirportButton.type = "button";
+  manualAirportButton.textContent = "Airport manuell setzen";
+  manualAirportButton.addEventListener("click", () => promptForAirport());
+
+  locationRow.appendChild(manualAirportButton);
+
   panel.appendChild(locationRow);
 
   const feedback = document.createElement("div");
@@ -759,6 +864,7 @@ function renderPrecheckScreen(container) {
       setPrecheckFeedback("");
       completePrecheck();
       renderApp();
+      fetchFlightSuggestions({ source: "auto" });
       updateLocationUi();
     });
   }
@@ -1005,6 +1111,13 @@ function renderFlightDetails(container) {
   locationRow.appendChild(locationInfo);
   locationRow.appendChild(locationActions);
 
+  const manualAirportButton = document.createElement("button");
+  manualAirportButton.className = "btn-neutral ghost-btn";
+  manualAirportButton.type = "button";
+  manualAirportButton.textContent = "Airport manuell setzen";
+  manualAirportButton.addEventListener("click", () => promptForAirport());
+  locationRow.appendChild(manualAirportButton);
+
   panel.appendChild(locationRow);
 
   container.appendChild(panel);
@@ -1040,9 +1153,10 @@ function renderFlightSuggestions(container) {
   const fetchButton = document.createElement("button");
   fetchButton.className = "btn-neutral";
   fetchButton.type = "button";
-  fetchButton.textContent = state.flightSuggestionStatus === "loading" ? "Lade..." : "Flüge laden";
-  fetchButton.disabled = !state.currentFlight.airport || state.flightSuggestionStatus === "loading";
-  fetchButton.addEventListener("click", fetchFlightSuggestions);
+  const isLoading = state.flightSuggestionStatus === "loading" || state.flightSuggestionStatus === "loading_auto";
+  fetchButton.textContent = isLoading ? "Lade..." : "Flüge laden";
+  fetchButton.disabled = !state.currentFlight.airport || isLoading;
+  fetchButton.addEventListener("click", () => fetchFlightSuggestions({ source: "manual" }));
 
   const clearButton = document.createElement("button");
   clearButton.className = "btn-neutral";
@@ -1068,12 +1182,21 @@ function renderFlightSuggestions(container) {
   status.textContent =
     state.flightSuggestionStatus === "loading"
       ? "Flüge werden geladen..."
+      : state.flightSuggestionStatus === "loading_auto"
+        ? "Flüge werden automatisch geladen..."
       : state.flightSuggestionStatus === "error"
         ? `Fehler beim Laden: ${state.flightSuggestionError || "unbekannt"}`
         : state.currentFlight.airport
           ? `Airport: ${state.currentFlight.airport}. Ladezeitraum: jetzt ±30 Min. ${apiSource}`
           : `Bitte zuerst Airport setzen, um Vorschläge zu laden. ${apiSource}`;
   panel.appendChild(status);
+
+  const apiBadge = document.createElement("div");
+  apiBadge.className = "api-badge";
+  apiBadge.textContent = state.flightApiConfig.url
+    ? "API-URL & Token im Browser gespeichert"
+    : "Keine API-URL gespeichert – nutze Samples";
+  panel.appendChild(apiBadge);
 
   const apiHint = document.createElement("p");
   apiHint.className = "card-hint";
@@ -1116,6 +1239,17 @@ function renderFlightSuggestions(container) {
       setFlightApiConfig("apiKey", event.target.value.trim());
     });
   }
+
+  const clearApiButton = document.createElement("button");
+  clearApiButton.type = "button";
+  clearApiButton.className = "btn-neutral ghost-btn";
+  clearApiButton.textContent = "API-URL & Token löschen";
+  clearApiButton.disabled = !state.flightApiConfig.url && !state.flightApiConfig.apiKey;
+  clearApiButton.addEventListener("click", () => {
+    clearFlightApiConfig();
+    renderFlightSuggestions(document.getElementById("app"));
+  });
+  apiGrid.appendChild(clearApiButton);
 
   panel.appendChild(apiGrid);
 
@@ -1209,13 +1343,18 @@ function buildSampleFlights(airport) {
   ];
 }
 
-async function fetchFlightSuggestions() {
+async function fetchFlightSuggestions(options = {}) {
+  const { source = "manual" } = options;
   if (!state.currentFlight.airport) {
     setFeedback("Bitte zuerst einen Airport setzen.");
     return;
   }
 
-  state = { ...state, flightSuggestionStatus: "loading", flightSuggestionError: "" };
+  state = {
+    ...state,
+    flightSuggestionStatus: source === "auto" ? "loading_auto" : "loading",
+    flightSuggestionError: "",
+  };
   persistState();
   renderFlightSuggestions(document.getElementById("app"));
 
@@ -1236,7 +1375,7 @@ async function fetchFlightSuggestions() {
         airport: state.currentFlight.airport,
         start: new Date(start * 1000).toISOString(),
         end: new Date(end * 1000).toISOString(),
-        direction: state.currentFlight.direction || "",
+        direction: state.currentFlight.direction || "both",
       });
       const response = await fetch(`${config.url}?${params.toString()}`, {
         headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {},
