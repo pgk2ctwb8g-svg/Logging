@@ -2716,6 +2716,7 @@ function renderApp() {
     return;
   }
   renderFlightDetails(app);
+  renderStatusRail(app);
   renderFlightSuggestions(app);
   renderDropdowns(app);
   renderProcessCards(app);
@@ -2723,6 +2724,74 @@ function renderApp() {
   renderLogPanel(app);
   renderFlightPickerOverlay();
   updateLocationUi();
+}
+
+function renderStatusRail(container) {
+  const existing = document.getElementById("status-rail");
+  if (existing) existing.remove();
+
+  const rail = document.createElement("div");
+  rail.id = "status-rail";
+  rail.className = "status-rail card";
+
+  const activeCount = Object.keys(state.activeProcesses || {}).length;
+  const completedCount = state.completedProcesses?.length || 0;
+
+  const items = [
+    {
+      label: "Flug",
+      value: state.currentFlight.flight_no || "nicht gesetzt",
+      hint: state.currentFlight.direction
+        ? state.currentFlight.direction === "arrival"
+          ? "Arrival"
+          : "Departure"
+        : "Bitte Richtung wählen",
+    },
+    {
+      label: "Aktiv",
+      value: activeCount,
+      hint: "laufende Prozesse",
+    },
+    {
+      label: "Abgeschlossen",
+      value: completedCount,
+      hint: "heute dokumentiert",
+    },
+    {
+      label: "Events",
+      value: state.events.length,
+      hint: "Session-Einträge",
+    },
+  ];
+
+  items.forEach((item) => {
+    const block = document.createElement("div");
+    block.className = "status-item";
+
+    const label = document.createElement("span");
+    label.className = "status-label";
+    label.textContent = item.label;
+
+    const value = document.createElement("div");
+    value.className = "status-value";
+    value.textContent = item.value;
+
+    const hint = document.createElement("span");
+    hint.className = "status-hint";
+    hint.textContent = item.hint;
+
+    block.appendChild(label);
+    block.appendChild(value);
+    block.appendChild(hint);
+    rail.appendChild(block);
+  });
+
+  const firstCard = container.firstChild;
+  if (firstCard && firstCard.nextSibling) {
+    container.insertBefore(rail, firstCard.nextSibling);
+  } else {
+    container.appendChild(rail);
+  }
 }
 
 function getSelectedValues() {
