@@ -466,7 +466,7 @@ function requestLocation(options = {}) {
 
   locationRequestInFlight = true;
   setPrecheckFeedback("GPS wird abgefragt...");
-  setLocationStatus("GPS-Abfrage läuft...");
+  setLocationStatus("GPS läuft...");
 
   if (button) {
     button.disabled = true;
@@ -488,7 +488,7 @@ function requestLocation(options = {}) {
         recordSuccessAt: timestamp,
       });
       setFeedback("GPS aktualisiert.");
-      setPrecheckFeedback("GPS gesetzt – suche nächsten Airport.");
+      setPrecheckFeedback("GPS gesetzt.");
       updateRetryButtons({ visible: false });
       if (autoFetch) triggerAutoFlightFetch();
       if (typeof onSuccess === "function") onSuccess();
@@ -502,16 +502,10 @@ function requestLocation(options = {}) {
     },
     (error) => {
       console.warn("GPS Fehler", error);
-      const errorHints = [
-        "Standortfreigabe prüfen",
-        "Browser-/Geräte-Einstellungen kontrollieren",
-        "Airport manuell setzen, falls weiterhin fehlgeschlagen",
-      ];
       const errorMessage = error?.message ? ` (${error.message})` : "";
-      const precheckMessage = `GPS fehlgeschlagen${errorMessage} – ${errorHints.join(" · ")}.`;
-      setFeedback("GPS konnte nicht abgefragt werden. Bitte Airport manuell eintragen.");
-      setPrecheckFeedback(precheckMessage);
-      setLocationStatus("GPS nicht gefunden – nutze Standard MUC.");
+      setFeedback("GPS fehlgeschlagen. Bitte Airport manuell setzen.");
+      setPrecheckFeedback(`GPS fehlgeschlagen${errorMessage}. Bitte Airport nutzen.`);
+      setLocationStatus("GPS fehlt – nutze Standard MUC.");
       ensureAirportFallbackOnce();
       if (autoFetch) triggerAutoFlightFetch();
       if (typeof onFailure === "function") onFailure();
@@ -616,8 +610,8 @@ function updateAirportFromLocation() {
   const suggestion = findNearestAirport(Number(state.location.latitude), Number(state.location.longitude));
   if (!suggestion) {
     ensureAirportFallback();
-    setFeedback("Keine Airport-Daten verfügbar. MUC als Fallback gesetzt.");
-    setPrecheckFeedback("Kein Airport gefunden – Fallback MUC gesetzt.");
+    setFeedback("Kein Airport gefunden. MUC als Fallback.");
+    setPrecheckFeedback("Kein Airport erkannt – MUC genutzt.");
     return;
   }
 
@@ -631,14 +625,14 @@ function updateAirportFromLocation() {
     state = { ...state, lastAirportSuggestion: suggestion.iata, lastAirportPromptLocationKey: locationPromptKey };
     persistState();
     setCurrentFlight("airport", suggestion.iata, { trackSuggestion: true });
-    setFeedback(`Airport übernommen: ${suggestion.iata} (${distanceLabel}).`);
-    setPrecheckFeedback(`Airport-Vorschlag übernommen: ${suggestion.iata} (${distanceLabel}).`);
+    setFeedback(`Airport: ${suggestion.iata} (${distanceLabel}).`);
+    setPrecheckFeedback(`Airport gesetzt: ${suggestion.iata} (${distanceLabel}).`);
   } else {
     state = { ...state, lastAirportSuggestion: "" };
     persistState();
     ensureAirportFallback();
-    setFeedback("Kein naher Airport erkannt. MUC als Fallback gesetzt.");
-    setPrecheckFeedback("Kein naher Airport erkannt – MUC als Fallback gesetzt.");
+    setFeedback("Kein naher Airport. MUC als Fallback.");
+    setPrecheckFeedback("Kein naher Airport – MUC genutzt.");
   }
 }
 
@@ -1017,7 +1011,7 @@ function renderPrecheckScreen(container) {
   const hint = document.createElement("p");
   hint.className = "card-hint";
   hint.textContent =
-    "1) Airport setzen (Standard: MUC, manuell anpassbar), 2) optional GPS für Vorschlag, 3) Flüge laden und auswählen.";
+    "Airport setzen, optional GPS, dann Flug wählen.";
 
   header.appendChild(title);
   header.appendChild(hint);
@@ -1030,7 +1024,7 @@ function renderPrecheckScreen(container) {
       title: "Airport",
       status: state.currentFlight.airport ? "done" : state.lastAirportSuggestion ? "action" : "pending",
       description: state.currentFlight.airport
-        ? `gesetzt: ${state.currentFlight.airport}`
+        ? `${state.currentFlight.airport}`
         : state.lastAirportSuggestion
           ? `Vorschlag: ${state.lastAirportSuggestion}`
           : "Standard: MUC",
@@ -1038,12 +1032,12 @@ function renderPrecheckScreen(container) {
     {
       title: "GPS (optional)",
       status: state.location.latitude && state.location.longitude ? "done" : "pending",
-      description: state.location.latitude && state.location.longitude ? "Koordinaten verfügbar" : "Kann nach Bedarf genutzt werden",
+      description: state.location.latitude && state.location.longitude ? "Koordinaten aktiv" : "Nach Bedarf nutzen",
     },
     {
       title: "Flug-Vorschläge",
       status: state.flightSuggestions.length ? "done" : "pending",
-      description: state.flightSuggestions.length ? "Liste geladen" : "nach Airport laden",
+      description: state.flightSuggestions.length ? "Liste geladen" : "Über Airport laden",
     },
   ];
 
@@ -1094,7 +1088,7 @@ function renderPrecheckScreen(container) {
   const directionSelect = document.createElement("div");
   directionSelect.className = "field-group";
   const directionLabel = document.createElement("label");
-  directionLabel.textContent = "Direction (optional, wird nach Auswahl gesetzt)";
+  directionLabel.textContent = "Direction (optional)";
   const direction = document.createElement("select");
   direction.id = "precheck-direction";
   [
@@ -1245,7 +1239,7 @@ function renderFlightDetails(container) {
 
   const hint = document.createElement("p");
   hint.className = "card-hint";
-  hint.textContent = "Automatisch übernommene Flugdaten; bei Bedarf manuell anpassen.";
+  hint.textContent = "Übernommene Flugdaten, jederzeit anpassbar.";
   header.appendChild(hint);
 
   panel.appendChild(header);
@@ -1257,10 +1251,10 @@ function renderFlightDetails(container) {
   const applied = state.lastAppliedFlight;
   const hasFlight = Boolean(state.currentFlight.flight_no);
   summaryText.textContent = hasFlight
-    ? `Übernommen: ${state.currentFlight.flight_no || "n/a"} · ${state.currentFlight.direction || "-"} · ${state.currentFlight.from_airport || "-"} → ${state.currentFlight.to_airport || "-"}`
+    ? `Aktiv: ${state.currentFlight.flight_no || "n/a"} · ${state.currentFlight.direction || "-"} · ${state.currentFlight.from_airport || "-"} → ${state.currentFlight.to_airport || "-"}`
     : applied
-      ? `Letzte Übernahme: ${applied.flight_no || "n/a"} · ${applied.direction || "-"}`
-      : "Noch kein Flug übernommen. Bitte aus der Liste wählen.";
+      ? `Zuletzt: ${applied.flight_no || "n/a"} · ${applied.direction || "-"}`
+      : "Noch kein Flug gewählt.";
   summaryRow.appendChild(summaryText);
 
   const summaryActions = document.createElement("div");
@@ -1277,7 +1271,7 @@ function renderFlightDetails(container) {
   const editButton = document.createElement("button");
   editButton.type = "button";
   editButton.className = "btn-neutral ghost-btn";
-  editButton.textContent = state.flightDetailsEditable ? "Eingabe ausblenden" : "Flugdaten bearbeiten";
+  editButton.textContent = state.flightDetailsEditable ? "Eingabe ausblenden" : "Manuell bearbeiten";
   editButton.addEventListener("click", () => setFlightDetailsEditable(!state.flightDetailsEditable));
   summaryActions.appendChild(editButton);
 
@@ -1291,7 +1285,7 @@ function renderFlightDetails(container) {
     loadedBox.className = "flight-loaded-summary";
     const loadedTitle = document.createElement("div");
     loadedTitle.className = "flight-loaded-title";
-    loadedTitle.textContent = "Geladene Daten aus der Flugauswahl";
+    loadedTitle.textContent = "Übernommene Daten";
 
     const loadedList = document.createElement("ul");
     loadedList.className = "flight-loaded-list";
@@ -1311,7 +1305,7 @@ function renderFlightDetails(container) {
 
     const loadedHint = document.createElement("div");
     loadedHint.className = "flight-loaded-hint";
-    loadedHint.textContent = "Passe die Angaben an, falls etwas nicht stimmt.";
+    loadedHint.textContent = "Bei Bedarf ändern.";
 
     loadedBox.appendChild(loadedTitle);
     loadedBox.appendChild(loadedList);
@@ -1337,7 +1331,7 @@ function renderFlightDetails(container) {
     missingWrapper.className = "missing-fields";
     const missingTitle = document.createElement("div");
     missingTitle.className = "missing-title";
-    missingTitle.textContent = "Fehlende Angaben ergänzen";
+    missingTitle.textContent = "Fehlendes ergänzen";
     const missingGrid = document.createElement("div");
     missingGrid.className = "field-grid";
 
@@ -1649,7 +1643,7 @@ function renderFlightSuggestions(container) {
   const hint = document.createElement("p");
   hint.className = "card-hint";
   hint.textContent =
-    `Lädt Flüge für den gesetzten Airport im Zeitfenster ±${FLIGHT_TIME_WINDOW_MIN} Minuten und schlägt Flugnummer & Aircraft Type vor. Falls kein API konfiguriert ist, werden Beispieldaten genutzt.`;
+    `Flüge im Fenster ±${FLIGHT_TIME_WINDOW_MIN} Minuten. Ohne API gibt es Samples.`;
 
   header.appendChild(title);
   header.appendChild(hint);
@@ -1703,20 +1697,20 @@ function renderFlightSuggestions(container) {
   status.className = "muted";
   status.style.fontSize = "0.95rem";
   const apiSource = state.flightApiConfig.url
-    ? `Quelle: ${state.flightApiConfig.url}${state.flightApiConfig.apiKey ? " (Auth gesetzt)" : ""}`
+    ? `Quelle: ${state.flightApiConfig.url}${state.flightApiConfig.apiKey ? " (mit Auth)" : ""}`
     : state.flightApiConfig.apiKey
-        ? "Quelle: AeroDataBox (RapidAPI Key hinterlegt)"
-        : "Quelle: Sample-Daten (kein API-Endpoint hinterlegt)";
+        ? "Quelle: RapidAPI (AeroDataBox)"
+        : "Quelle: Samples";
   const statusLabel =
     state.flightSuggestionStatus === "loading"
       ? "Flüge werden geladen..."
       : state.flightSuggestionStatus === "loading_auto"
-        ? "Flüge werden automatisch geladen..."
+        ? "Automatisches Laden..."
       : state.flightSuggestionStatus === "error"
           ? `Fehler beim Laden: ${state.flightSuggestionError || "unbekannt"}`
           : state.currentFlight.airport
-            ? `Airport: ${state.currentFlight.airport}. Ladezeitraum: jetzt ±${FLIGHT_TIME_WINDOW_MIN} Min · max. ${MAX_FLIGHT_SUGGESTIONS} Vorschläge. ${apiSource}`
-            : `Bitte zuerst Airport setzen, um Vorschläge zu laden. ${apiSource}`;
+            ? `Airport ${state.currentFlight.airport} · ±${FLIGHT_TIME_WINDOW_MIN} Min · max. ${MAX_FLIGHT_SUGGESTIONS} · ${apiSource}`
+            : `Airport setzen und laden. ${apiSource}`;
   status.textContent = statusLabel;
   panel.appendChild(status);
 
@@ -1748,24 +1742,23 @@ function renderFlightSuggestions(container) {
   };
   const sourceLabel = sourceLabelMap[state.flightSuggestionSource] || "unbekannt";
   analysis.textContent = state.flightSuggestionAnalysis
-    ? `API-Status: ${state.flightSuggestionAnalysis} Quelle: ${sourceLabel}.`
-    : `API-Status: Noch keine Abfrage durchgeführt. Quelle: ${sourceLabel}.`;
+    ? `API: ${state.flightSuggestionAnalysis} · ${sourceLabel}.`
+    : `API: noch nichts geladen · ${sourceLabel}.`;
   panel.appendChild(analysis);
 
   const apiBadge = document.createElement("div");
   apiBadge.className = "api-badge";
   apiBadge.textContent = state.flightApiConfig.url
-    ? "API-URL & Token im Browser gespeichert"
+    ? "API-URL gespeichert"
     : state.flightApiConfig.apiKey
-        ? "RapidAPI Key im Browser gespeichert"
-        : "Keine API-Quelle gespeichert – nutze Samples";
+        ? "RapidAPI Key gespeichert"
+        : "Samples aktiv";
   panel.appendChild(apiBadge);
 
   const apiHint = document.createElement("p");
   apiHint.className = "card-hint";
   apiHint.style.marginTop = "-0.25rem";
-  apiHint.textContent =
-    "Hinweis: Externe APIs benötigen CORS-Freigabe. Falls Flightradar/andere Quellen blocken, nutze einen kleinen Proxy (z.B. Cloudflare Worker) und trage dessen URL hier ein.";
+  apiHint.textContent = "APIs brauchen CORS/Proxy, sonst Samples.";
   panel.appendChild(apiHint);
 
   const apiGrid = document.createElement("div");
@@ -1848,7 +1841,7 @@ function renderFlightSuggestions(container) {
 
       const detail = document.createElement("div");
       detail.className = "muted";
-      detail.textContent = flight.description || `Zeitnaher Flug im ±${FLIGHT_TIME_WINDOW_MIN} Min Slot.`;
+      detail.textContent = flight.description || `Flug im ±${FLIGHT_TIME_WINDOW_MIN} Min Fenster.`;
       card.appendChild(detail);
 
       const applyButton = document.createElement("button");
@@ -1890,8 +1883,8 @@ function renderFlightPickerOverlay() {
   title.textContent = "Flüge in deiner Nähe";
   const subtitle = document.createElement("p");
   subtitle.textContent = state.currentFlight.airport
-    ? `Airport: ${state.currentFlight.airport} · max. ${MAX_FLIGHT_SUGGESTIONS} Ergebnisse · Zeitfenster ±${FLIGHT_TIME_WINDOW_MIN} Min`
-    : `Kein Airport gesetzt – nutze MUC als Fallback · Zeitfenster ±${FLIGHT_TIME_WINDOW_MIN} Min`;
+    ? `Airport: ${state.currentFlight.airport} · max. ${MAX_FLIGHT_SUGGESTIONS} · ±${FLIGHT_TIME_WINDOW_MIN} Min`
+    : `Kein Airport gesetzt – Fallback MUC · ±${FLIGHT_TIME_WINDOW_MIN} Min`;
   header.appendChild(title);
   header.appendChild(subtitle);
 
@@ -1919,11 +1912,11 @@ function renderFlightPickerOverlay() {
   }
   const analysisText =
     state.flightSuggestionAnalysis ||
-    "Noch keine Analyse vorhanden. Bitte Flüge erneut laden, um Details zu sehen.";
+    "Noch nichts geladen.";
   sourceInfo.innerHTML = `
     <div class="source-label">${sourceLabel}</div>
     <div class="source-detail">${analysisText}</div>
-    <div class="source-hint">Passe Airport/GPS oder die API-URL an und klicke „Flüge laden“, um echte Daten zu holen.</div>
+    <div class="source-hint">Airport/API anpassen und erneut laden.</div>
   `;
   dialog.appendChild(sourceInfo);
 
@@ -1946,7 +1939,7 @@ function renderFlightPickerOverlay() {
 
   const scrollHint = document.createElement("div");
   scrollHint.className = "flight-picker-scroll-hint";
-  scrollHint.textContent = "Scrollen oder wischen, um alle vorgeschlagenen Flüge zu sehen.";
+  scrollHint.textContent = "Scrollen für weitere Flüge.";
   dialog.appendChild(scrollHint);
 
   const list = document.createElement("div");
@@ -1971,7 +1964,7 @@ function renderFlightPickerOverlay() {
 
     const info = document.createElement("div");
     info.className = "flight-picker-info";
-    info.textContent = flight.description || `Zeitnaher Flug im ±${FLIGHT_TIME_WINDOW_MIN} Min Slot.`;
+    info.textContent = flight.description || `Flug im ±${FLIGHT_TIME_WINDOW_MIN} Min Fenster.`;
 
     const applyButton = document.createElement("button");
     applyButton.type = "button";
@@ -2244,9 +2237,9 @@ async function fetchFlightSuggestions(options = {}) {
       ...state,
       flightSuggestions: [],
       flightSuggestionStatus: "error",
-      flightSuggestionError: "Keine Flug-API konfiguriert – bitte API-URL oder RapidAPI Key setzen.",
+      flightSuggestionError: "Keine Flug-API konfiguriert.",
       flightSuggestionSource: "api_error",
-      flightSuggestionAnalysis: "Ohne API-URL oder RapidAPI-Key können keine Flüge geladen werden.",
+      flightSuggestionAnalysis: "Bitte API-URL oder RapidAPI-Key setzen.",
       flightPickerOpen: false,
     };
     persistState();
@@ -2286,8 +2279,8 @@ async function fetchFlightSuggestions(options = {}) {
             ? data
             : [];
       analysis = flights.length
-        ? `API erfolgreich: ${flights.length} Flüge im ±${FLIGHT_TIME_WINDOW_MIN} Min Fenster geladen.`
-        : `API antwortete ohne Flüge – bitte Zeitraum oder Airport prüfen.`;
+        ? `API ok: ${flights.length} Flüge im ±${FLIGHT_TIME_WINDOW_MIN} Min Fenster.`
+        : `API ohne Treffer – Zeitraum/Airport prüfen.`;
     } catch (error) {
       console.warn("Konnte Flug-API nicht laden.", error);
       status = "error";
@@ -2298,12 +2291,12 @@ async function fetchFlightSuggestions(options = {}) {
   } else if (hasRapidApiKey) {
     try {
       const rapidNote = shouldForceRapidPath
-        ? "URL zeigte auf AeroDataBox RapidAPI – nutze RapidAPI-Flow mit korrekten Headern statt Custom-API. "
+        ? "AeroDataBox RapidAPI erkannt. "
         : "";
       flights = await fetchAerodataboxRapid({ airport: state.currentFlight.airport, apiKey: config.apiKey });
       analysis = flights.length
-        ? `${rapidNote}AeroDataBox RapidAPI erfolgreich: ${flights.length} Flüge um jetzt ±${FLIGHT_TIME_WINDOW_MIN} Min geladen.`
-        : `${rapidNote}AeroDataBox lieferte keine Flüge – bitte Airport oder Zeitraum prüfen.`;
+        ? `${rapidNote}${flights.length} Flüge über RapidAPI.`
+        : `${rapidNote}Keine Flüge über RapidAPI.`;
     } catch (error) {
       status = "error";
       errorMessage = error.message || "RapidAPI Fehler";
@@ -2314,7 +2307,7 @@ async function fetchFlightSuggestions(options = {}) {
     status = "error";
     errorMessage = "Keine passende Flug-API verfügbar.";
     sourceLabel = "api_error";
-    analysis = "Bitte API-URL oder RapidAPI-Key ergänzen, um Flüge zu laden.";
+    analysis = "API-URL oder RapidAPI-Key ergänzen.";
   }
 
   const finalFlights = flights.slice(0, MAX_FLIGHT_SUGGESTIONS);
@@ -2322,7 +2315,7 @@ async function fetchFlightSuggestions(options = {}) {
 
   if (noFlightsFound && status !== "error") {
     status = "error";
-    errorMessage = `Keine Flüge für ${state.currentFlight.airport} im Zeitraum ±${FLIGHT_TIME_WINDOW_MIN} Min gefunden.`;
+    errorMessage = `Keine Flüge für ${state.currentFlight.airport} im ±${FLIGHT_TIME_WINDOW_MIN} Min Fenster.`;
     sourceLabel = "api_error";
   }
 
@@ -2355,7 +2348,7 @@ function renderDropdowns(container) {
 
   const hint = document.createElement("p");
   hint.className = "card-hint";
-  hint.textContent = "Disruption, Equipment, Pax-Mix und Beobachtungsqualität erfassen.";
+  hint.textContent = "Kontext kompakt erfassen.";
   header.appendChild(hint);
 
   panel.appendChild(header);
@@ -2380,7 +2373,7 @@ function renderDropdowns(container) {
   notesLabel.textContent = "Notes";
   const textarea = document.createElement("textarea");
   textarea.id = "notes";
-  textarea.placeholder = "Zusätzliche Hinweise, Störungen oder Beobachtungen";
+  textarea.placeholder = "Kurze Notizen";
   notesLabel.appendChild(textarea);
   notesField.appendChild(notesLabel);
   grid.appendChild(notesField);
@@ -2454,8 +2447,8 @@ function renderProcessCards(container) {
   helper.className = "card-hint";
   const activeDirection = state.currentFlight.direction;
   helper.textContent = activeDirection
-    ? `Relevante Prozesse für ${activeDirection === "arrival" ? "Arrival" : "Departure"}`
-    : "Start/Ende pro Prozess";
+    ? `Prozesse für ${activeDirection === "arrival" ? "Arrival" : "Departure"}`
+    : "Start/Ende je Prozess";
 
   header.appendChild(title);
   header.appendChild(helper);
@@ -2567,7 +2560,7 @@ function renderProcessVisualization() {
 
   const hint = document.createElement("p");
   hint.className = "card-hint";
-  hint.textContent = "Aktive Prozesse laufen als animierte Puls-Icons ein, abgeschlossene gleiten in die Historie.";
+  hint.textContent = "Aktive Prozesse pulsen, abgeschlossene wandern in die Historie.";
 
   header.appendChild(title);
   header.appendChild(hint);
