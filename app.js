@@ -863,8 +863,6 @@ function renderPrecheckScreen(container) {
     gpsButton.addEventListener("click", () =>
       requestLocation({
         buttonId: "precheck-location-button",
-        onSuccess: () => fetchFlightSuggestions({ source: "auto", openPicker: true }),
-        onFailure: () => fetchFlightSuggestions({ source: "auto", openPicker: true }),
       })
     );
   }
@@ -885,7 +883,6 @@ function renderPrecheckScreen(container) {
       setPrecheckFeedback("");
       completePrecheck();
       renderApp();
-      fetchFlightSuggestions({ source: "auto" });
       updateLocationUi();
     });
   }
@@ -1442,6 +1439,28 @@ function renderFlightPickerOverlay() {
   header.appendChild(closeButton);
 
   dialog.appendChild(header);
+
+  const sourceInfo = document.createElement("div");
+  sourceInfo.className = "flight-picker-source";
+  const sourceLabelMap = {
+    api: "API-Daten",
+    sample: "Samples (kein API)",
+    sample_fallback: "Samples (API-Fallback)",
+    unknown: "Quelle unbekannt",
+  };
+  const sourceLabel = sourceLabelMap[state.flightSuggestionSource] || sourceLabelMap.unknown;
+  if (state.flightSuggestionSource !== "api") {
+    sourceInfo.classList.add("is-fallback");
+  }
+  const analysisText =
+    state.flightSuggestionAnalysis ||
+    "Noch keine Analyse vorhanden. Bitte Flüge erneut laden, um Details zu sehen.";
+  sourceInfo.innerHTML = `
+    <div class="source-label">${sourceLabel}</div>
+    <div class="source-detail">${analysisText}</div>
+    <div class="source-hint">Passe Airport/GPS oder die API-URL an und klicke „Flüge laden“, um echte Daten zu holen.</div>
+  `;
+  dialog.appendChild(sourceInfo);
 
   const list = document.createElement("div");
   list.className = "flight-picker-list";
@@ -2025,11 +2044,7 @@ function handleStart() {
   setCurrentFlight("airport", defaultAirport);
   applyStartMode(false);
   renderApp();
-  const triggerSuggestions = () => fetchFlightSuggestions({ source: "auto", openPicker: true });
-  requestLocation({
-    onSuccess: triggerSuggestions,
-    onFailure: triggerSuggestions,
-  });
+  requestLocation();
 }
 
 function renderApp() {
@@ -2225,8 +2240,7 @@ document.addEventListener("DOMContentLoaded", () => {
   state = loadState();
   renderApp();
   if (state.started) {
-    const triggerSuggestions = () => fetchFlightSuggestions({ source: "auto", openPicker: true });
-    requestLocation({ onSuccess: triggerSuggestions, onFailure: triggerSuggestions });
+    requestLocation();
   }
   populateLog();
   updateSessionSummary();

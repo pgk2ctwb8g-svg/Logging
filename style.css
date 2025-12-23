@@ -300,6 +300,35 @@ textarea {
   gap: 0.5rem;
 }
 
+.flight-picker-source {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.85rem 0.9rem;
+  background: #f8fafc;
+  display: grid;
+  gap: 0.3rem;
+}
+
+.flight-picker-source .source-label {
+  font-weight: 800;
+  font-size: 0.95rem;
+}
+
+.flight-picker-source .source-detail {
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
+.flight-picker-source .source-hint {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.flight-picker-source.is-fallback {
+  border-color: #f97316;
+  background: #fff7ed;
+}
+
 .flight-picker-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
