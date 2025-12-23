@@ -2123,6 +2123,17 @@ function applyFlightSelection(flight) {
   setFeedback(`Flug ${flight.flight_no || ""} übernommen.`);
 }
 
+function isAerodataboxRapidUrl(url) {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.includes("aerodatabox.p.rapidapi.com");
+  } catch (error) {
+    console.warn("Konnte URL nicht parsen.", error);
+    return false;
+  }
+}
+
 async function fetchAerodataboxRapid({ airport, apiKey }) {
   if (!airport || !apiKey) return [];
   const params = new URLSearchParams({
@@ -2217,13 +2228,15 @@ async function fetchFlightSuggestions(options = {}) {
   };
   const hasRapidApiKey = Boolean(config.apiKey);
   const hasCustomApiUrl = Boolean(config.url && (!defaultApiUrl || config.url !== defaultApiUrl));
+  const pointsToRapidHost = isAerodataboxRapidUrl(config.url);
+  const shouldForceRapidPath = pointsToRapidHost && hasRapidApiKey;
   let flights = [];
   let status = "idle";
   let errorMessage = "";
   let sourceLabel = "sample";
   let analysis = "";
 
-  if (config?.url && (hasCustomApiUrl || !hasRapidApiKey)) {
+  if (config?.url && (hasCustomApiUrl || !hasRapidApiKey) && !shouldForceRapidPath) {
     sourceLabel = "api";
     try {
       const params = new URLSearchParams({
@@ -2261,10 +2274,13 @@ async function fetchFlightSuggestions(options = {}) {
   } else if (hasRapidApiKey) {
     sourceLabel = "api";
     try {
+      const rapidNote = shouldForceRapidPath
+        ? "URL zeigte auf AeroDataBox RapidAPI – nutze RapidAPI-Flow mit korrekten Headern statt Custom-API. "
+        : "";
       flights = await fetchAerodataboxRapid({ airport: state.currentFlight.airport, apiKey: config.apiKey });
       analysis = flights.length
-        ? `AeroDataBox RapidAPI erfolgreich: ${flights.length} Flüge um jetzt ±${FLIGHT_TIME_WINDOW_MIN} Min geladen.`
-        : `AeroDataBox lieferte keine Flüge – fallback auf Samples (±${FLIGHT_TIME_WINDOW_MIN} Min).`;
+        ? `${rapidNote}AeroDataBox RapidAPI erfolgreich: ${flights.length} Flüge um jetzt ±${FLIGHT_TIME_WINDOW_MIN} Min geladen.`
+        : `${rapidNote}AeroDataBox lieferte keine Flüge – fallback auf Samples (±${FLIGHT_TIME_WINDOW_MIN} Min).`;
       if (!flights.length) {
         sourceLabel = "sample_fallback";
       }
