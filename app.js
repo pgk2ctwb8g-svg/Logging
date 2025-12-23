@@ -1189,7 +1189,7 @@ function renderPrecheckScreen(container) {
     gpsButton.addEventListener("click", () =>
       requestLocation({
         buttonId: "precheck-location-button",
-        autoFetch: true,
+        autoFetch: false,
       })
     );
   }
@@ -1198,7 +1198,7 @@ function renderPrecheckScreen(container) {
     gpsRetryButton.addEventListener("click", () =>
       requestLocation({
         buttonId: "precheck-location-retry-button",
-        autoFetch: true,
+        autoFetch: false,
       })
     );
   }
@@ -1224,6 +1224,7 @@ function renderPrecheckScreen(container) {
 
       completePrecheck();
       renderApp();
+      fetchFlightSuggestions({ source: "auto", openPicker: true });
       updateLocationUi();
     });
   }
@@ -1740,6 +1741,7 @@ function renderFlightSuggestions(container) {
   analysis.className = "card-hint";
   const sourceLabelMap = {
     api: "API-Daten",
+    api_error: "API-Fehler",
     sample: "Samples (kein API)",
     sample_fallback: "Samples (API-Fallback)",
     unknown: "unbekannt",
@@ -1906,6 +1908,7 @@ function renderFlightPickerOverlay() {
   sourceInfo.className = "flight-picker-source";
   const sourceLabelMap = {
     api: "API-Daten",
+    api_error: "API-Fehler",
     sample: "Samples (kein API)",
     sample_fallback: "Samples (API-Fallback)",
     unknown: "Quelle unbekannt",
@@ -2223,9 +2226,25 @@ async function fetchFlightSuggestions(options = {}) {
   const windowApiConfig = typeof window !== "undefined" ? window.flightApiConfig || {} : {};
   const defaultApiUrl = getDefaultFlightApiUrl();
   const config = {
-    url: state.flightApiConfig?.url || windowApiConfig.url || "",
+    url: state.flightApiConfig?.url || windowApiConfig.url || defaultApiUrl || "",
     apiKey: state.flightApiConfig?.apiKey || windowApiConfig.apiKey || "",
   };
+
+  if (!config.url && !config.apiKey) {
+    state = {
+      ...state,
+      flightSuggestions: [],
+      flightSuggestionStatus: "error",
+      flightSuggestionError: "Keine Flug-API konfiguriert – bitte API-URL oder RapidAPI Key setzen.",
+      flightSuggestionSource: "api_error",
+      flightSuggestionAnalysis: "Ohne API-URL oder RapidAPI-Key können keine Flüge geladen werden.",
+      flightPickerOpen: false,
+    };
+    persistState();
+    renderFlightSuggestions(document.getElementById("app"));
+    return;
+  }
+
   const hasRapidApiKey = Boolean(config.apiKey);
   const hasCustomApiUrl = Boolean(config.url && (!defaultApiUrl || config.url !== defaultApiUrl));
   const pointsToRapidHost = isAerodataboxRapidUrl(config.url);
@@ -2233,11 +2252,10 @@ async function fetchFlightSuggestions(options = {}) {
   let flights = [];
   let status = "idle";
   let errorMessage = "";
-  let sourceLabel = "sample";
+  let sourceLabel = "api";
   let analysis = "";
 
   if (config?.url && (hasCustomApiUrl || !hasRapidApiKey) && !shouldForceRapidPath) {
-    sourceLabel = "api";
     try {
       const params = new URLSearchParams({
         airport: state.currentFlight.airport,
@@ -2260,19 +2278,15 @@ async function fetchFlightSuggestions(options = {}) {
             : [];
       analysis = flights.length
         ? `API erfolgreich: ${flights.length} Flüge im ±${FLIGHT_TIME_WINDOW_MIN} Min Fenster geladen.`
-        : `API antwortete ohne Flüge – fallback auf Samples (±${FLIGHT_TIME_WINDOW_MIN} Min).`;
-      if (!flights.length) {
-        sourceLabel = "sample_fallback";
-      }
+        : `API antwortete ohne Flüge – bitte Zeitraum oder Airport prüfen.`;
     } catch (error) {
-      console.warn("Konnte Flug-API nicht laden, fallback auf Sample.", error);
+      console.warn("Konnte Flug-API nicht laden.", error);
       status = "error";
       errorMessage = error.message || "API Fehler";
-      sourceLabel = "sample_fallback";
-      analysis = `API-Fehler: ${error.message || "unbekannt"}. Nutze Samples (±${FLIGHT_TIME_WINDOW_MIN} Min).`;
+      sourceLabel = "api_error";
+      analysis = `API-Fehler: ${error.message || "unbekannt"}.`;
     }
   } else if (hasRapidApiKey) {
-    sourceLabel = "api";
     try {
       const rapidNote = shouldForceRapidPath
         ? "URL zeigte auf AeroDataBox RapidAPI – nutze RapidAPI-Flow mit korrekten Headern statt Custom-API. "
@@ -2280,25 +2294,28 @@ async function fetchFlightSuggestions(options = {}) {
       flights = await fetchAerodataboxRapid({ airport: state.currentFlight.airport, apiKey: config.apiKey });
       analysis = flights.length
         ? `${rapidNote}AeroDataBox RapidAPI erfolgreich: ${flights.length} Flüge um jetzt ±${FLIGHT_TIME_WINDOW_MIN} Min geladen.`
-        : `${rapidNote}AeroDataBox lieferte keine Flüge – fallback auf Samples (±${FLIGHT_TIME_WINDOW_MIN} Min).`;
-      if (!flights.length) {
-        sourceLabel = "sample_fallback";
-      }
+        : `${rapidNote}AeroDataBox lieferte keine Flüge – bitte Airport oder Zeitraum prüfen.`;
     } catch (error) {
       status = "error";
       errorMessage = error.message || "RapidAPI Fehler";
-      sourceLabel = "sample_fallback";
-      analysis = `RapidAPI-Fehler: ${error.message || "unbekannt"}. Nutze Samples (±${FLIGHT_TIME_WINDOW_MIN} Min).`;
+      sourceLabel = "api_error";
+      analysis = `RapidAPI-Fehler: ${error.message || "unbekannt"}.`;
     }
   } else {
-    analysis = `Keine API-URL oder RapidAPI-Key gesetzt – nutze Samples (±${FLIGHT_TIME_WINDOW_MIN} Min).`;
-  }
-
-  if (!flights.length) {
-    flights = buildSampleFlights(state.currentFlight.airport);
+    status = "error";
+    errorMessage = "Keine passende Flug-API verfügbar.";
+    sourceLabel = "api_error";
+    analysis = "Bitte API-URL oder RapidAPI-Key ergänzen, um Flüge zu laden.";
   }
 
   const finalFlights = flights.slice(0, MAX_FLIGHT_SUGGESTIONS);
+  const noFlightsFound = finalFlights.length === 0;
+
+  if (noFlightsFound && status !== "error") {
+    status = "error";
+    errorMessage = `Keine Flüge für ${state.currentFlight.airport} im Zeitraum ±${FLIGHT_TIME_WINDOW_MIN} Min gefunden.`;
+    sourceLabel = "api_error";
+  }
 
   state = {
     ...state,
@@ -2690,6 +2707,12 @@ function handleStart() {
   state = {
     ...state,
     started: true,
+    flightSuggestions: [],
+    flightSuggestionStatus: "idle",
+    flightSuggestionError: "",
+    flightSuggestionSource: "unknown",
+    flightSuggestionAnalysis: "",
+    flightSuggestionStats: { count: 0, topAirline: "", windowMinutes: FLIGHT_TIME_WINDOW_MIN },
     precheckCompleted: false,
     flightDetailsEditable: false,
     flightPickerOpen: false,
