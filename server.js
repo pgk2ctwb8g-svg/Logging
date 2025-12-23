@@ -11,6 +11,12 @@ const AVIATIONSTACK_API_KEY = process.env.AVIATIONSTACK_API_KEY;
 const AERODATABOX_API_KEY = process.env.AERODATABOX_API_KEY;
 const AERODATABOX_HOST = process.env.AERODATABOX_HOST || "aerodatabox.p.rapidapi.com";
 const AERODATABOX_BASE_URL = process.env.AERODATABOX_BASE_URL || `https://${AERODATABOX_HOST}`;
+const CACHE_TTL_MS = 90 * 1000;
+const CIRCUIT_BREAKER_THRESHOLD = 3;
+const CIRCUIT_BREAKER_COOLDOWN_MS = 60 * 1000;
+
+const flightCache = new Map();
+const circuitBreakers = new Map();
 
 const AIRPORT_IATA_TO_ICAO = {
   MUC: "EDDM",
@@ -70,6 +76,14 @@ app.get("/flights", async (req, res) => {
     const flights = await fetchFlights({ airport, direction, start, end, preferBoth });
     return res.json({ flights });
   } catch (error) {
+    if (error instanceof CircuitOpenError) {
+      console.error("Circuit breaker active", { provider: PROVIDER, status: error.providerStatus });
+      return res.status(502).json({
+        error: "Provider temporarily unavailable",
+        provider: PROVIDER,
+        status: error.providerStatus,
+      });
+    }
     console.error("Flight proxy error", error);
     return res.status(502).json({ error: "Upstream error", details: error.message || "unknown" });
   }
@@ -105,22 +119,117 @@ function defaultWindow() {
 }
 
 async function fetchFlights({ airport, direction, start, end, preferBoth }) {
+  const effectiveDirection = PROVIDER === "aerodatabox" && preferBoth ? "both" : direction;
+  const cacheKey = buildCacheKey({ airport, direction: effectiveDirection, start, end });
+  const cached = getFromCache(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const breakerStatus = getCircuitBreaker(PROVIDER);
+  if (isCircuitOpen(breakerStatus)) {
+    throw new CircuitOpenError(PROVIDER, formatCircuitStatus(breakerStatus));
+  }
+
   if (PROVIDER === "aerodatabox") {
     if (!AERODATABOX_API_KEY) {
       throw new Error("AERODATABOX_API_KEY not set for aerodatabox provider");
     }
-    const providerDirection = preferBoth ? "both" : direction;
-    return fetchAerodatabox({ airport, direction: providerDirection, start, end });
+    return callWithBreaker(async () => fetchAerodatabox({ airport, direction: effectiveDirection, start, end }), cacheKey);
   }
 
   if (PROVIDER === "aviationstack") {
     if (!AVIATIONSTACK_API_KEY) {
       throw new Error("AVIATIONSTACK_API_KEY not set for aviationstack provider");
     }
-    return fetchAviationStack({ airport, direction, start, end });
+    return callWithBreaker(async () => fetchAviationStack({ airport, direction: effectiveDirection, start, end }), cacheKey);
   }
 
-  return fetchOpenSky({ airport, direction, start, end });
+  return callWithBreaker(async () => fetchOpenSky({ airport, direction: effectiveDirection, start, end }), cacheKey);
+}
+
+function buildCacheKey({ airport, direction, start, end }) {
+  return [PROVIDER, airport, direction, start, end].join("|");
+}
+
+function getFromCache(key) {
+  const entry = flightCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    flightCache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function setCache(key, value) {
+  flightCache.set(key, {
+    value,
+    expiresAt: Date.now() + CACHE_TTL_MS,
+  });
+}
+
+async function callWithBreaker(fn, cacheKey) {
+  try {
+    const result = await fn();
+    setCache(cacheKey, result);
+    recordSuccess(PROVIDER);
+    return result;
+  } catch (error) {
+    const state = recordFailure(PROVIDER);
+    if (isCircuitOpen(state)) {
+      throw new CircuitOpenError(PROVIDER, formatCircuitStatus(state));
+    }
+    throw error;
+  }
+}
+
+function getCircuitBreaker(provider) {
+  if (!circuitBreakers.has(provider)) {
+    circuitBreakers.set(provider, { failures: 0, cooldownUntil: 0 });
+  }
+  const state = circuitBreakers.get(provider);
+  if (state.cooldownUntil && Date.now() > state.cooldownUntil) {
+    state.failures = 0;
+    state.cooldownUntil = 0;
+  }
+  return state;
+}
+
+function recordFailure(provider) {
+  const state = getCircuitBreaker(provider);
+  state.failures += 1;
+  if (state.failures >= CIRCUIT_BREAKER_THRESHOLD) {
+    state.cooldownUntil = Date.now() + CIRCUIT_BREAKER_COOLDOWN_MS;
+  }
+  return state;
+}
+
+function recordSuccess(provider) {
+  const state = getCircuitBreaker(provider);
+  state.failures = 0;
+  state.cooldownUntil = 0;
+  return state;
+}
+
+function isCircuitOpen(state) {
+  return state.cooldownUntil > Date.now();
+}
+
+function formatCircuitStatus(state) {
+  return {
+    state: isCircuitOpen(state) ? "open" : "closed",
+    failures: state.failures,
+    cooldownUntil: state.cooldownUntil,
+  };
+}
+
+class CircuitOpenError extends Error {
+  constructor(provider, status) {
+    super(`Circuit breaker open for provider ${provider}`);
+    this.name = "CircuitOpenError";
+    this.providerStatus = status;
+  }
 }
 
 function toIcao(airport) {
@@ -138,8 +247,15 @@ async function fetchOpenSky({ airport, direction, start, end }) {
     end: String(clampedEnd),
   });
   const url = `${OPEN_SKY_BASE_URL}/flights/${direction}?${params.toString()}`;
-  const response = await fetch(url);
+  let response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    logUpstreamError("opensky", { url, status: null, error });
+    throw new Error(`OpenSky request failed: ${error.message}`);
+  }
   if (!response.ok) {
+    logUpstreamError("opensky", { url, status: response.status });
     throw new Error(`OpenSky responded with HTTP ${response.status}`);
   }
   const data = await response.json();
@@ -201,8 +317,15 @@ async function fetchAviationStack({ airport, direction, start, end }) {
   }
 
   const url = `http://api.aviationstack.com/v1/flights?${params.toString()}`;
-  const response = await fetch(url);
+  let response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    logUpstreamError("aviationstack", { url, status: null, error });
+    throw new Error(`AviationStack request failed: ${error.message}`);
+  }
   if (!response.ok) {
+    logUpstreamError("aviationstack", { url, status: response.status });
     throw new Error(`AviationStack responded with HTTP ${response.status}`);
   }
   const data = await response.json();
@@ -263,14 +386,21 @@ async function fetchAerodatabox({ airport, direction, start, end }) {
   });
 
   const url = `${AERODATABOX_BASE_URL}/flights/airports/${codeType}/${airport}/${fromIso}/${toIso}?${params.toString()}`;
-  const response = await fetch(url, {
-    headers: {
-      "X-RapidAPI-Key": AERODATABOX_API_KEY,
-      "X-RapidAPI-Host": AERODATABOX_HOST,
-    },
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        "X-RapidAPI-Key": AERODATABOX_API_KEY,
+        "X-RapidAPI-Host": AERODATABOX_HOST,
+      },
+    });
+  } catch (error) {
+    logUpstreamError("aerodatabox", { url, status: null, error });
+    throw new Error(`AeroDataBox request failed: ${error.message}`);
+  }
 
   if (!response.ok) {
+    logUpstreamError("aerodatabox", { url, status: response.status });
     throw new Error(`AeroDataBox responded with HTTP ${response.status}`);
   }
 
@@ -328,6 +458,16 @@ function buildAerodataboxDescription({ direction, fromAirport, toAirport, schedu
     return `Anflug ${toAirport} aus ${fromAirport || "Unbekannt"}${timeLabel}${statusLabel}.`;
   }
   return `Abflug ${fromAirport} nach ${toAirport || "Unbekannt"}${timeLabel}${statusLabel}.`;
+}
+
+function logUpstreamError(provider, { status, url, error }) {
+  const payload = {
+    provider,
+    status,
+    url,
+    message: error?.message || null,
+  };
+  console.error("Upstream request failed", payload);
 }
 
 if (require.main === module) {
