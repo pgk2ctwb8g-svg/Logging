@@ -12,6 +12,9 @@ const STORAGE_KEY_API = "mucsim_logger_flight_api";
 
 const DEFAULT_STATE = {
   started: false,
+  flightPickerOpen: false,
+  flightDetailsEditable: false,
+  lastAppliedFlight: null,
   currentFlight: {
     flight_no: "",
     direction: "",
@@ -169,6 +172,9 @@ function loadState() {
           ...DEFAULT_STATE,
           ...parsed,
           started: parsed.started ?? DEFAULT_STATE.started,
+          flightPickerOpen: parsed.flightPickerOpen ?? DEFAULT_STATE.flightPickerOpen,
+          flightDetailsEditable: parsed.flightDetailsEditable ?? DEFAULT_STATE.flightDetailsEditable,
+          lastAppliedFlight: parsed.lastAppliedFlight ?? DEFAULT_STATE.lastAppliedFlight,
           currentFlight: { ...DEFAULT_STATE.currentFlight, ...(parsed.currentFlight || {}) },
           activeProcesses: normalizedActive,
           events: Array.isArray(parsed.events) ? parsed.events : [],
@@ -197,6 +203,9 @@ function loadState() {
       apiKey: fallbackApiConfig.apiKey || windowApiConfig.apiKey || "",
     },
     started: false,
+    flightPickerOpen: false,
+    flightDetailsEditable: false,
+    lastAppliedFlight: null,
   };
 }
 
@@ -238,6 +247,18 @@ function clearFlightApiConfig() {
 function completePrecheck() {
   state = { ...state, precheckCompleted: true };
   persistState();
+}
+
+function setFlightDetailsEditable(value) {
+  state = { ...state, flightDetailsEditable: Boolean(value) };
+  persistState();
+  renderApp();
+}
+
+function setFlightPickerOpen(value) {
+  state = { ...state, flightPickerOpen: Boolean(value) };
+  persistState();
+  renderFlightPickerOverlay();
 }
 
 function applyStartMode(isStartMode) {
@@ -285,14 +306,19 @@ function resetLocation() {
   setLocation({ latitude: "", longitude: "", accuracy: "", timestamp: "" });
 }
 
+function ensureAirportFallback() {
+  if (!state.currentFlight.airport) {
+    setCurrentFlight("airport", "MUC");
+  }
+}
+
 function requestLocation(options = {}) {
-  const { isInitial = false, buttonId } = typeof options === "boolean" ? { isInitial: options } : options ?? {};
+  const { buttonId, onSuccess, onFailure } = typeof options === "boolean" ? {} : options ?? {};
   const button = document.getElementById(buttonId || "location-button");
   if (!navigator.geolocation) {
     setFeedback("GPS wird vom Browser nicht unterstützt.");
-    if (isInitial && !state.currentFlight.airport) {
-      promptForAirport();
-    }
+    ensureAirportFallback();
+    if (typeof onFailure === "function") onFailure();
     return;
   }
 
@@ -312,6 +338,7 @@ function requestLocation(options = {}) {
         timestamp,
       });
       setFeedback("GPS aktualisiert.");
+      if (typeof onSuccess === "function") onSuccess();
       if (button) {
         button.disabled = false;
         button.textContent = "GPS aktualisieren";
@@ -320,9 +347,8 @@ function requestLocation(options = {}) {
     (error) => {
       console.warn("GPS Fehler", error);
       setFeedback("GPS konnte nicht abgefragt werden. Bitte Airport manuell eintragen.");
-      if (isInitial && !state.currentFlight.airport) {
-        promptForAirport();
-      }
+      ensureAirportFallback();
+      if (typeof onFailure === "function") onFailure();
       if (button) {
         button.disabled = false;
         button.textContent = "GPS aktualisieren";
@@ -391,8 +417,8 @@ function updateAirportFromLocation() {
   if (!state.location.latitude || !state.location.longitude) return;
   const suggestion = findNearestAirport(Number(state.location.latitude), Number(state.location.longitude));
   if (!suggestion) {
-    window.alert("GPS gefunden, aber keine Airport-Daten verfügbar. Bitte Airport manuell eintragen.");
-    setFeedback("Keine Airport-Daten verfügbar. Bitte Airport manuell eintragen.");
+    ensureAirportFallback();
+    setFeedback("Keine Airport-Daten verfügbar. MUC als Fallback gesetzt.");
     return;
   }
 
@@ -403,25 +429,15 @@ function updateAirportFromLocation() {
 
   if (suggestion.distanceKm <= NEAREST_AIRPORT_MAX_DISTANCE_KM) {
     const distanceLabel = `${Math.round(suggestion.distanceKm)} km`;
-    state = { ...state, lastAirportSuggestion: suggestion.iata };
+    state = { ...state, lastAirportSuggestion: suggestion.iata, lastAirportPromptLocationKey: locationPromptKey };
     persistState();
-    const confirmed = window.confirm(
-      `GPS erkannt: Nächster Airport ist ${suggestion.iata} (${distanceLabel}). Soll der Wert übernommen werden?`
-    );
-    if (confirmed) {
-      setCurrentFlight("airport", suggestion.iata, { trackSuggestion: true });
-      setFeedback(`Airport übernommen: ${suggestion.iata} (${distanceLabel}).`);
-    } else {
-      setFeedback(`Airport-Vorschlag ${suggestion.iata} (${distanceLabel}) verworfen.`);
-    }
+    setCurrentFlight("airport", suggestion.iata, { trackSuggestion: true });
+    setFeedback(`Airport übernommen: ${suggestion.iata} (${distanceLabel}).`);
   } else {
     state = { ...state, lastAirportSuggestion: "" };
     persistState();
-    if (!state.currentFlight.airport) {
-      setCurrentFlight("airport", "", { trackSuggestion: false });
-    }
-    window.alert("GPS gefunden, aber kein Airport im 100 km Umkreis erkannt. Bitte Airport manuell eintragen.");
-    setFeedback("Kein naher Airport erkannt. Bitte Airport manuell eintragen.");
+    ensureAirportFallback();
+    setFeedback("Kein naher Airport erkannt. MUC als Fallback gesetzt.");
   }
 }
 
@@ -660,7 +676,6 @@ function syncFlightInputs() {
     ["airport-code", state.currentFlight.airport],
     ["precheck-airport", state.currentFlight.airport],
     ["flight-no", state.currentFlight.flight_no],
-    ["precheck-flight-no", state.currentFlight.flight_no],
     ["flight-stand", state.currentFlight.stand],
     ["flight-gate", state.currentFlight.gate],
     ["from-airport", state.currentFlight.from_airport],
@@ -700,7 +715,7 @@ function renderPrecheckScreen(container) {
   const hint = document.createElement("p");
   hint.className = "card-hint";
   hint.textContent =
-    "1) GPS holen, 2) Airport übernehmen (Fallback: manuell), 3) Flüge laden für automatische Vorbefüllung.";
+    "1) GPS holen (öffnet Flugliste), 2) Airport übernehmen (Fallback: MUC), 3) Flug auswählen für Auto-Vorbefüllung.";
 
   header.appendChild(title);
   header.appendChild(hint);
@@ -768,7 +783,7 @@ function renderPrecheckScreen(container) {
   const directionSelect = document.createElement("div");
   directionSelect.className = "field-group";
   const directionLabel = document.createElement("label");
-  directionLabel.textContent = "Direction (Pflicht)";
+  directionLabel.textContent = "Direction (optional, wird nach Auswahl gesetzt)";
   const direction = document.createElement("select");
   direction.id = "precheck-direction";
   [
@@ -785,24 +800,6 @@ function renderPrecheckScreen(container) {
   directionLabel.appendChild(direction);
   directionSelect.appendChild(directionLabel);
   grid.appendChild(directionSelect);
-
-  grid.appendChild(
-    createInputField({
-      id: "precheck-flight-no",
-      label: "Flight-No (Pflicht)",
-      value: state.currentFlight.flight_no,
-      placeholder: "z.B. LH123",
-    })
-  );
-
-  grid.appendChild(
-    createInputField({
-      id: "precheck-stand",
-      label: "Stand (optional)",
-      value: state.currentFlight.stand,
-      placeholder: "z.B. G12",
-    })
-  );
 
   panel.appendChild(grid);
 
@@ -843,8 +840,6 @@ function renderPrecheckScreen(container) {
 
   const airportInput = panel.querySelector("#precheck-airport");
   const directionInput = panel.querySelector("#precheck-direction");
-  const flightInput = panel.querySelector("#precheck-flight-no");
-  const standInput = panel.querySelector("#precheck-stand");
   const gpsButton = panel.querySelector("#precheck-location-button");
   const continueButton = panel.querySelector("#precheck-continue-button");
 
@@ -860,28 +855,20 @@ function renderPrecheckScreen(container) {
     });
   }
 
-  if (flightInput) {
-    flightInput.addEventListener("input", (event) => {
-      setCurrentFlight("flight_no", event.target.value);
-    });
-  }
-
-  if (standInput) {
-    standInput.addEventListener("input", (event) => {
-      setCurrentFlight("stand", event.target.value);
-    });
-  }
-
   if (gpsButton) {
-    gpsButton.addEventListener("click", () => requestLocation({ buttonId: "precheck-location-button" }));
+    gpsButton.addEventListener("click", () =>
+      requestLocation({
+        buttonId: "precheck-location-button",
+        onSuccess: () => fetchFlightSuggestions({ source: "auto", openPicker: true }),
+        onFailure: () => fetchFlightSuggestions({ source: "auto", openPicker: true }),
+      })
+    );
   }
 
   if (continueButton) {
     continueButton.addEventListener("click", () => {
       const errors = [];
       if (!state.currentFlight.airport) errors.push("Airport");
-      if (!state.currentFlight.direction) errors.push("Direction");
-      if (!state.currentFlight.flight_no) errors.push("Flight-No");
       if (!state.location.latitude || !state.location.longitude) {
         errors.push("GPS-Position");
       }
@@ -915,192 +902,241 @@ function renderFlightDetails(container) {
 
   const hint = document.createElement("p");
   hint.className = "card-hint";
-  hint.textContent = "Grunddaten des Fluges und Beobachter*in";
+  hint.textContent = "Automatisch übernommene Flugdaten; bei Bedarf manuell anpassen.";
   header.appendChild(hint);
 
   panel.appendChild(header);
 
-  const row = document.createElement("div");
-  row.className = "field-grid";
+  const summaryRow = document.createElement("div");
+  summaryRow.className = "flight-summary-row";
+  const summaryText = document.createElement("div");
+  summaryText.className = "flight-summary-text";
+  const applied = state.lastAppliedFlight;
+  const hasFlight = Boolean(state.currentFlight.flight_no);
+  summaryText.textContent = hasFlight
+    ? `Übernommen: ${state.currentFlight.flight_no || "n/a"} · ${state.currentFlight.direction || "-"} · ${state.currentFlight.from_airport || "-"} → ${state.currentFlight.to_airport || "-"}`
+    : applied
+      ? `Letzte Übernahme: ${applied.flight_no || "n/a"} · ${applied.direction || "-"}`
+      : "Noch kein Flug übernommen. Bitte aus der Liste wählen.";
+  summaryRow.appendChild(summaryText);
 
-  row.appendChild(
-    createInputField({
-      id: "airport-code",
-      label: "Airport (IATA)",
-      value: state.currentFlight.airport,
-      placeholder: "z.B. MUC",
-    })
-  );
-  const airportInput = row.querySelector("#airport-code");
-  if (airportInput) {
-    airportInput.addEventListener("input", (event) => {
-      setCurrentFlight("airport", event.target.value.toUpperCase());
-    });
+  const summaryActions = document.createElement("div");
+  summaryActions.className = "summary-actions";
+
+  const pickerButton = document.createElement("button");
+  pickerButton.type = "button";
+  pickerButton.className = "btn-start";
+  pickerButton.textContent = hasFlight ? "Anderen Flug wählen" : "Flüge anzeigen";
+  pickerButton.disabled = state.flightSuggestions.length === 0;
+  pickerButton.addEventListener("click", () => setFlightPickerOpen(true));
+  summaryActions.appendChild(pickerButton);
+
+  const editButton = document.createElement("button");
+  editButton.type = "button";
+  editButton.className = "btn-neutral ghost-btn";
+  editButton.textContent = state.flightDetailsEditable ? "Eingabe ausblenden" : "Flugdaten bearbeiten";
+  editButton.addEventListener("click", () => setFlightDetailsEditable(!state.flightDetailsEditable));
+  summaryActions.appendChild(editButton);
+
+  summaryRow.appendChild(summaryActions);
+  panel.appendChild(summaryRow);
+
+  const showEditor = state.flightDetailsEditable || !state.currentFlight.flight_no;
+
+  if (!showEditor && hasFlight) {
+    const compact = document.createElement("div");
+    compact.className = "flight-compact";
+    compact.innerHTML = `
+      <div><strong>Flug:</strong> ${state.currentFlight.flight_no || "-"} (${state.currentFlight.aircraft_type || "Type n/a"})</div>
+      <div><strong>Route:</strong> ${state.currentFlight.from_airport || "-"} → ${state.currentFlight.to_airport || "-"} | Gate ${state.currentFlight.gate || "–"} | Stand ${state.currentFlight.stand || "–"}</div>
+      <div><strong>Direction:</strong> ${state.currentFlight.direction || "–"} | Airport: ${state.currentFlight.airport || "-"}</div>
+    `;
+    panel.appendChild(compact);
   }
 
-  const directionSelect = document.createElement("div");
-  directionSelect.className = "field-group";
+  if (showEditor) {
+    const row = document.createElement("div");
+    row.className = "field-grid";
 
-  const directionLabel = document.createElement("label");
-  directionLabel.textContent = "Direction";
-  const select = document.createElement("select");
-  select.id = "flight-direction";
+    row.appendChild(
+      createInputField({
+        id: "airport-code",
+        label: "Airport (IATA)",
+        value: state.currentFlight.airport,
+        placeholder: "z.B. MUC",
+      })
+    );
+    const airportInput = row.querySelector("#airport-code");
+    if (airportInput) {
+      airportInput.addEventListener("input", (event) => {
+        setCurrentFlight("airport", event.target.value.toUpperCase());
+      });
+    }
 
-  [
-    { value: "", label: "Keine Angabe" },
-    { value: "arrival", label: "Arrival" },
-    { value: "departure", label: "Departure" },
-  ].forEach((option) => {
-    const opt = document.createElement("option");
-    opt.value = option.value;
-    opt.textContent = option.label;
-    select.appendChild(opt);
-  });
+    const directionSelect = document.createElement("div");
+    directionSelect.className = "field-group";
 
-  select.value = state.currentFlight.direction;
-  select.addEventListener("change", (event) => {
-    setCurrentFlight("direction", event.target.value);
-    renderProcessCards(document.getElementById("app"));
-  });
+    const directionLabel = document.createElement("label");
+    directionLabel.textContent = "Direction";
+    const select = document.createElement("select");
+    select.id = "flight-direction";
 
-  directionLabel.appendChild(select);
-  directionSelect.appendChild(directionLabel);
-
-  row.appendChild(
-    createInputField({
-      id: "flight-no",
-      label: "Flight-No",
-      value: state.currentFlight.flight_no,
-      placeholder: "z.B. LH123",
-    })
-  );
-  const flightInput = row.querySelector("#flight-no");
-  if (flightInput) {
-    flightInput.addEventListener("input", (event) => {
-      setCurrentFlight("flight_no", event.target.value);
+    [
+      { value: "", label: "Keine Angabe" },
+      { value: "arrival", label: "Arrival" },
+      { value: "departure", label: "Departure" },
+    ].forEach((option) => {
+      const opt = document.createElement("option");
+      opt.value = option.value;
+      opt.textContent = option.label;
+      select.appendChild(opt);
     });
-  }
 
-  row.appendChild(directionSelect);
-  row.appendChild(
-    createInputField({
-      id: "flight-stand",
-      label: "Stand",
-      value: state.currentFlight.stand,
-      placeholder: "z.B. G12",
-    })
-  );
-  const standInput = row.querySelector("#flight-stand");
-  if (standInput) {
-    standInput.addEventListener("input", (event) => {
-      setCurrentFlight("stand", event.target.value);
+    select.value = state.currentFlight.direction;
+    select.addEventListener("change", (event) => {
+      setCurrentFlight("direction", event.target.value);
+      renderProcessCards(document.getElementById("app"));
     });
+
+    directionLabel.appendChild(select);
+    directionSelect.appendChild(directionLabel);
+
+    row.appendChild(
+      createInputField({
+        id: "flight-no",
+        label: "Flight-No",
+        value: state.currentFlight.flight_no,
+        placeholder: "z.B. LH123",
+      })
+    );
+    const flightInput = row.querySelector("#flight-no");
+    if (flightInput) {
+      flightInput.addEventListener("input", (event) => {
+        setCurrentFlight("flight_no", event.target.value);
+      });
+    }
+
+    row.appendChild(directionSelect);
+    row.appendChild(
+      createInputField({
+        id: "flight-stand",
+        label: "Stand",
+        value: state.currentFlight.stand,
+        placeholder: "z.B. G12",
+      })
+    );
+    const standInput = row.querySelector("#flight-stand");
+    if (standInput) {
+      standInput.addEventListener("input", (event) => {
+        setCurrentFlight("stand", event.target.value);
+      });
+    }
+
+    row.appendChild(
+      createInputField({
+        id: "flight-gate",
+        label: "Gate",
+        value: state.currentFlight.gate,
+        placeholder: "z.B. K5",
+      })
+    );
+    const gateInput = row.querySelector("#flight-gate");
+    if (gateInput) {
+      gateInput.addEventListener("input", (event) => {
+        setCurrentFlight("gate", event.target.value);
+      });
+    }
+
+    panel.appendChild(row);
+
+    const observerRow = document.createElement("div");
+    observerRow.className = "field-grid";
+    observerRow.appendChild(
+      createInputField({
+        id: "observer-id",
+        label: "Observer-ID",
+        value: state.observer_id,
+        placeholder: "Mitarbeiterkennung",
+      })
+    );
+
+    const observerInput = observerRow.querySelector("#observer-id");
+    if (observerInput) {
+      observerInput.addEventListener("input", (event) => {
+        setObserver(event.target.value);
+      });
+    }
+
+    observerRow.appendChild(
+      createInputField({
+        id: "from-airport",
+        label: "From Airport (IATA, optional)",
+        value: state.currentFlight.from_airport,
+        placeholder: "z.B. FRA",
+      })
+    );
+
+    observerRow.appendChild(
+      createInputField({
+        id: "to-airport",
+        label: "To Airport (IATA, optional)",
+        value: state.currentFlight.to_airport,
+        placeholder: "z.B. JFK",
+      })
+    );
+
+    const fromAirportInput = observerRow.querySelector("#from-airport");
+    if (fromAirportInput) {
+      fromAirportInput.addEventListener("input", (event) => {
+        setCurrentFlight("from_airport", event.target.value.toUpperCase());
+      });
+    }
+
+    const toAirportInput = observerRow.querySelector("#to-airport");
+    if (toAirportInput) {
+      toAirportInput.addEventListener("input", (event) => {
+        setCurrentFlight("to_airport", event.target.value.toUpperCase());
+      });
+    }
+
+    panel.appendChild(observerRow);
+
+    const airlineRow = document.createElement("div");
+    airlineRow.className = "field-grid";
+    airlineRow.appendChild(
+      createInputField({
+        id: "airline-code",
+        label: "Airline-Code (optional)",
+        value: state.currentFlight.airline_code,
+        placeholder: "z.B. LH",
+      })
+    );
+
+    const airlineCodeInput = airlineRow.querySelector("#airline-code");
+    if (airlineCodeInput) {
+      airlineCodeInput.addEventListener("input", (event) => {
+        setCurrentFlight("airline_code", event.target.value.toUpperCase());
+      });
+    }
+
+    airlineRow.appendChild(
+      createInputField({
+        id: "aircraft-type",
+        label: "Aircraft Type (optional)",
+        value: state.currentFlight.aircraft_type,
+        placeholder: "z.B. A20N",
+      })
+    );
+
+    const aircraftTypeInput = airlineRow.querySelector("#aircraft-type");
+    if (aircraftTypeInput) {
+      aircraftTypeInput.addEventListener("input", (event) => {
+        setCurrentFlight("aircraft_type", event.target.value.toUpperCase());
+      });
+    }
+
+    panel.appendChild(airlineRow);
   }
-
-  row.appendChild(
-    createInputField({
-      id: "flight-gate",
-      label: "Gate",
-      value: state.currentFlight.gate,
-      placeholder: "z.B. K5",
-    })
-  );
-  const gateInput = row.querySelector("#flight-gate");
-  if (gateInput) {
-    gateInput.addEventListener("input", (event) => {
-      setCurrentFlight("gate", event.target.value);
-    });
-  }
-
-  panel.appendChild(row);
-
-  const observerRow = document.createElement("div");
-  observerRow.className = "field-grid";
-  observerRow.appendChild(
-    createInputField({
-      id: "observer-id",
-      label: "Observer-ID",
-      value: state.observer_id,
-      placeholder: "Mitarbeiterkennung",
-    })
-  );
-
-  const observerInput = observerRow.querySelector("#observer-id");
-  if (observerInput) {
-    observerInput.addEventListener("input", (event) => {
-      setObserver(event.target.value);
-    });
-  }
-
-  observerRow.appendChild(
-    createInputField({
-      id: "from-airport",
-      label: "From Airport (IATA, optional)",
-      value: state.currentFlight.from_airport,
-      placeholder: "z.B. FRA",
-    })
-  );
-
-  observerRow.appendChild(
-    createInputField({
-      id: "to-airport",
-      label: "To Airport (IATA, optional)",
-      value: state.currentFlight.to_airport,
-      placeholder: "z.B. JFK",
-    })
-  );
-
-  const fromAirportInput = observerRow.querySelector("#from-airport");
-  if (fromAirportInput) {
-    fromAirportInput.addEventListener("input", (event) => {
-      setCurrentFlight("from_airport", event.target.value.toUpperCase());
-    });
-  }
-
-  const toAirportInput = observerRow.querySelector("#to-airport");
-  if (toAirportInput) {
-    toAirportInput.addEventListener("input", (event) => {
-      setCurrentFlight("to_airport", event.target.value.toUpperCase());
-    });
-  }
-
-  panel.appendChild(observerRow);
-
-  const airlineRow = document.createElement("div");
-  airlineRow.className = "field-grid";
-  airlineRow.appendChild(
-    createInputField({
-      id: "airline-code",
-      label: "Airline-Code (optional)",
-      value: state.currentFlight.airline_code,
-      placeholder: "z.B. LH",
-    })
-  );
-
-  const airlineCodeInput = airlineRow.querySelector("#airline-code");
-  if (airlineCodeInput) {
-    airlineCodeInput.addEventListener("input", (event) => {
-      setCurrentFlight("airline_code", event.target.value.toUpperCase());
-    });
-  }
-
-  airlineRow.appendChild(
-    createInputField({
-      id: "aircraft-type",
-      label: "Aircraft Type (optional)",
-      value: state.currentFlight.aircraft_type,
-      placeholder: "z.B. A20N",
-    })
-  );
-
-  const aircraftTypeInput = airlineRow.querySelector("#aircraft-type");
-  if (aircraftTypeInput) {
-    aircraftTypeInput.addEventListener("input", (event) => {
-      setCurrentFlight("aircraft_type", event.target.value.toUpperCase());
-    });
-  }
-
-  panel.appendChild(airlineRow);
 
   const locationRow = document.createElement("div");
   locationRow.className = "location-row";
@@ -1186,7 +1222,14 @@ function renderFlightSuggestions(container) {
   const isLoading = state.flightSuggestionStatus === "loading" || state.flightSuggestionStatus === "loading_auto";
   fetchButton.textContent = isLoading ? "Lade..." : "Flüge laden";
   fetchButton.disabled = !state.currentFlight.airport || isLoading;
-  fetchButton.addEventListener("click", () => fetchFlightSuggestions({ source: "manual" }));
+  fetchButton.addEventListener("click", () => fetchFlightSuggestions({ source: "manual", openPicker: true }));
+
+  const showPickerButton = document.createElement("button");
+  showPickerButton.className = "btn-start";
+  showPickerButton.type = "button";
+  showPickerButton.textContent = "Flüge anzeigen";
+  showPickerButton.disabled = state.flightSuggestions.length === 0;
+  showPickerButton.addEventListener("click", () => setFlightPickerOpen(true));
 
   const clearButton = document.createElement("button");
   clearButton.className = "btn-neutral";
@@ -1194,12 +1237,20 @@ function renderFlightSuggestions(container) {
   clearButton.textContent = "Vorschläge leeren";
   clearButton.disabled = state.flightSuggestions.length === 0;
   clearButton.addEventListener("click", () => {
-    state = { ...state, flightSuggestions: [], flightSuggestionStatus: "idle", flightSuggestionError: "" };
+    state = {
+      ...state,
+      flightSuggestions: [],
+      flightSuggestionStatus: "idle",
+      flightSuggestionError: "",
+      flightPickerOpen: false,
+    };
     persistState();
     renderFlightSuggestions(document.getElementById("app"));
+    renderFlightPickerOverlay();
   });
 
   actions.appendChild(fetchButton);
+  actions.appendChild(showPickerButton);
   actions.appendChild(clearButton);
   panel.appendChild(actions);
 
@@ -1323,24 +1374,7 @@ function renderFlightSuggestions(container) {
       applyButton.type = "button";
       applyButton.textContent = "Flug übernehmen";
       applyButton.addEventListener("click", () => {
-        const flightFields = [
-          ["flight_no", flight.flight_no],
-          ["airline_code", flight.airline_code],
-          ["aircraft_type", flight.aircraft_type],
-          ["direction", flight.direction],
-          ["gate", flight.gate],
-          ["stand", flight.stand],
-          ["from_airport", flight.from_airport],
-          ["to_airport", flight.to_airport],
-          ["airport", flight.airport],
-        ];
-        flightFields.forEach(([field, value]) => {
-          if (value) {
-            setCurrentFlight(field, value);
-          }
-        });
-        renderProcessCards(document.getElementById("app"));
-        setFeedback(`Flug ${flight.flight_no || ""} übernommen.`);
+        applyFlightSelection(flight);
       });
 
       card.appendChild(applyButton);
@@ -1350,6 +1384,84 @@ function renderFlightSuggestions(container) {
 
   panel.appendChild(list);
   container.appendChild(panel);
+}
+
+function renderFlightPickerOverlay() {
+  const existing = document.getElementById("flight-picker-overlay");
+  if (!state.flightPickerOpen || !state.flightSuggestions.length) {
+    if (existing) existing.remove();
+    return;
+  }
+
+  if (existing) existing.remove();
+
+  const overlay = document.createElement("div");
+  overlay.id = "flight-picker-overlay";
+  overlay.className = "flight-picker-overlay";
+
+  const dialog = document.createElement("div");
+  dialog.className = "flight-picker-dialog";
+
+  const header = document.createElement("div");
+  header.className = "flight-picker-header";
+  const title = document.createElement("h3");
+  title.textContent = "Flüge in deiner Nähe";
+  const subtitle = document.createElement("p");
+  subtitle.textContent = state.currentFlight.airport
+    ? `Airport: ${state.currentFlight.airport} · max. 8 Ergebnisse`
+    : "Kein Airport gesetzt – nutze MUC als Fallback";
+  header.appendChild(title);
+  header.appendChild(subtitle);
+
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.className = "btn-neutral ghost-btn close-picker";
+  closeButton.textContent = "Schließen";
+  closeButton.addEventListener("click", () => setFlightPickerOpen(false));
+  header.appendChild(closeButton);
+
+  dialog.appendChild(header);
+
+  const list = document.createElement("div");
+  list.className = "flight-picker-list";
+
+  state.flightSuggestions.slice(0, 8).forEach((flight) => {
+    const card = document.createElement("div");
+    card.className = "flight-picker-card";
+    const heading = document.createElement("div");
+    heading.className = "flight-picker-heading";
+    heading.innerHTML = `<strong>${flight.flight_no || "Unbekannt"}</strong> · ${flight.airline || "Airline n/a"}`;
+
+    const meta = document.createElement("div");
+    meta.className = "flight-picker-meta";
+    meta.textContent = [
+      flight.direction ? (flight.direction === "arrival" ? "Arrival" : "Departure") : "",
+      flight.aircraft_type || "",
+      flight.from_airport || flight.to_airport ? `${flight.from_airport || "-"} → ${flight.to_airport || "-"}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+
+    const info = document.createElement("div");
+    info.className = "flight-picker-info";
+    info.textContent = flight.description || "Zeitnaher Flug im ±30 Min Slot.";
+
+    const applyButton = document.createElement("button");
+    applyButton.type = "button";
+    applyButton.className = "btn-start";
+    applyButton.textContent = "Übernehmen";
+    applyButton.addEventListener("click", () => applyFlightSelection(flight));
+
+    card.appendChild(heading);
+    card.appendChild(meta);
+    card.appendChild(info);
+    card.appendChild(applyButton);
+    list.appendChild(card);
+  });
+
+  dialog.appendChild(list);
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
 }
 
 function buildSampleFlights(airport) {
@@ -1389,8 +1501,46 @@ function buildSampleFlights(airport) {
   ];
 }
 
+function applyFlightSelection(flight) {
+  const flightFields = [
+    ["flight_no", flight.flight_no],
+    ["airline_code", flight.airline_code],
+    ["aircraft_type", flight.aircraft_type],
+    ["direction", flight.direction],
+    ["gate", flight.gate],
+    ["stand", flight.stand],
+    ["from_airport", flight.from_airport],
+    ["to_airport", flight.to_airport],
+    ["airport", flight.airport],
+  ];
+  flightFields.forEach(([field, value]) => {
+    if (value) {
+      setCurrentFlight(field, value);
+    }
+  });
+
+  state = {
+    ...state,
+    flightDetailsEditable: false,
+    lastAppliedFlight: {
+      flight_no: flight.flight_no || state.currentFlight.flight_no || "",
+      direction: flight.direction || state.currentFlight.direction || "",
+      airport: flight.airport || state.currentFlight.airport || "",
+      from_airport: flight.from_airport || "",
+      to_airport: flight.to_airport || "",
+      gate: flight.gate || "",
+      stand: flight.stand || "",
+      aircraft_type: flight.aircraft_type || "",
+    },
+  };
+  persistState();
+  setFlightPickerOpen(false);
+  renderApp();
+  setFeedback(`Flug ${flight.flight_no || ""} übernommen.`);
+}
+
 async function fetchFlightSuggestions(options = {}) {
-  const { source = "manual" } = options;
+  const { source = "manual", openPicker = false } = options;
   if (!state.currentFlight.airport) {
     setFeedback("Bitte zuerst einen Airport setzen.");
     return;
@@ -1400,6 +1550,7 @@ async function fetchFlightSuggestions(options = {}) {
     ...state,
     flightSuggestionStatus: source === "auto" ? "loading_auto" : "loading",
     flightSuggestionError: "",
+    flightPickerOpen: false,
   };
   persistState();
   renderFlightSuggestions(document.getElementById("app"));
@@ -1452,9 +1603,11 @@ async function fetchFlightSuggestions(options = {}) {
     flightSuggestions: flights.slice(0, 8),
     flightSuggestionStatus: status,
     flightSuggestionError: errorMessage,
+    flightPickerOpen: openPicker && flights.length > 0,
   };
   persistState();
   renderFlightSuggestions(document.getElementById("app"));
+  renderFlightPickerOverlay();
 }
 
 function renderDropdowns(container) {
@@ -1829,12 +1982,16 @@ function renderStartScreen(container) {
 
 function handleStart() {
   const defaultAirport = state.currentFlight.airport || "MUC";
-  state = { ...state, started: true, precheckCompleted: false };
+  state = { ...state, started: true, precheckCompleted: false, flightDetailsEditable: false };
   persistState();
   setCurrentFlight("airport", defaultAirport);
   applyStartMode(false);
   renderApp();
-  requestLocation({ isInitial: true });
+  const triggerSuggestions = () => fetchFlightSuggestions({ source: "auto", openPicker: true });
+  requestLocation({
+    onSuccess: triggerSuggestions,
+    onFailure: triggerSuggestions,
+  });
 }
 
 function renderApp() {
@@ -1857,6 +2014,7 @@ function renderApp() {
   renderProcessCards(app);
   renderSessionControls(app);
   renderLogPanel(app);
+  renderFlightPickerOverlay();
   updateLocationUi();
 }
 
@@ -2029,7 +2187,8 @@ document.addEventListener("DOMContentLoaded", () => {
   state = loadState();
   renderApp();
   if (state.started) {
-    requestLocation({ isInitial: true });
+    const triggerSuggestions = () => fetchFlightSuggestions({ source: "auto", openPicker: true });
+    requestLocation({ onSuccess: triggerSuggestions, onFailure: triggerSuggestions });
   }
   populateLog();
   updateSessionSummary();
