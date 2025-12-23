@@ -13,6 +13,7 @@ const STORAGE_KEY_API = "mucsim_logger_flight_api";
 const FLIGHT_TIME_WINDOW_MIN = 15;
 const MAX_FLIGHT_SUGGESTIONS = 5;
 const NEAREST_AIRPORT_MAX_DISTANCE_KM = 100;
+const LOCATION_RETRY_DELAY_MS = 5000;
 
 const DEFAULT_STATE = {
   started: false,
@@ -38,6 +39,7 @@ const DEFAULT_STATE = {
     accuracy: "",
     timestamp: "",
   },
+  lastLocationSuccessAt: "",
   locationStatus: "",
   lastAirportSuggestion: "",
   lastAirportPromptLocationKey: "",
@@ -114,6 +116,7 @@ const AIRPORTS = [
 
 let state = { ...DEFAULT_STATE };
 let locationRequestInFlight = false;
+let locationRetryTimeoutId = null;
 let scheduledPersistId = null;
 
 function scheduleStatePersist(delay = 250) {
@@ -212,6 +215,7 @@ function loadState() {
           activeProcesses: normalizedActive,
           events: Array.isArray(parsed.events) ? parsed.events : [],
           completedProcesses: normalizedCompleted,
+          lastLocationSuccessAt: parsed.lastLocationSuccessAt || "",
           locationStatus: parsed.locationStatus || "",
           lastAirportSuggestion: parsed.lastAirportSuggestion || "",
           lastAirportPromptLocationKey: parsed.lastAirportPromptLocationKey || "",
@@ -258,6 +262,38 @@ function loadState() {
 function persistState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   persistFlightApiConfig(state.flightApiConfig);
+}
+
+function clearLocationRetryTimer() {
+  if (locationRetryTimeoutId) {
+    clearTimeout(locationRetryTimeoutId);
+    locationRetryTimeoutId = null;
+  }
+}
+
+function getRetryButtons() {
+  return ["precheck-location-retry-button", "location-retry-button"]
+    .map((id) => document.getElementById(id))
+    .filter(Boolean);
+}
+
+function updateRetryButtons({ visible, disabled, label }) {
+  getRetryButtons().forEach((button) => {
+    if (visible !== undefined) {
+      button.style.display = visible ? "inline-flex" : "none";
+    }
+    if (disabled !== undefined) {
+      button.disabled = disabled;
+    }
+    if (label) {
+      button.textContent = label;
+    } else if (!button.dataset.originalLabel) {
+      button.dataset.originalLabel = button.textContent;
+    }
+    if (!label && button.dataset.originalLabel) {
+      button.textContent = button.dataset.originalLabel;
+    }
+  });
 }
 
 function setCurrentFlight(field, value, options = {}) {
@@ -354,7 +390,7 @@ function setLocationStatus(status) {
   updateLocationUi();
 }
 
-function setLocation({ latitude, longitude, accuracy, timestamp, statusMessage }) {
+function setLocation({ latitude, longitude, accuracy, timestamp, statusMessage, recordSuccessAt }) {
   state = {
     ...state,
     location: {
@@ -363,6 +399,7 @@ function setLocation({ latitude, longitude, accuracy, timestamp, statusMessage }
       accuracy: accuracy ?? "",
       timestamp: timestamp ?? "",
     },
+    ...(recordSuccessAt !== undefined ? { lastLocationSuccessAt: recordSuccessAt } : {}),
     locationStatus: statusMessage !== undefined ? statusMessage : state.locationStatus,
   };
   persistState();
@@ -371,7 +408,7 @@ function setLocation({ latitude, longitude, accuracy, timestamp, statusMessage }
 }
 
 function resetLocation() {
-  setLocation({ latitude: "", longitude: "", accuracy: "", timestamp: "", statusMessage: "" });
+  setLocation({ latitude: "", longitude: "", accuracy: "", timestamp: "", statusMessage: "", recordSuccessAt: "" });
 }
 
 function ensureAirportFallback() {
@@ -394,8 +431,19 @@ function triggerAutoFlightFetch() {
 }
 
 function requestLocation(options = {}) {
-  const { buttonId, onSuccess, onFailure, autoFetch } = typeof options === "boolean" ? {} : options ?? {};
+  const { buttonId, onSuccess, onFailure, autoFetch, allowRetry = true } =
+    typeof options === "boolean" ? {} : options ?? {};
   const button = document.getElementById(buttonId || "location-button");
+  const ensureAirportFallbackOnce = (() => {
+    let applied = false;
+    return () => {
+      if (!applied) {
+        ensureAirportFallback();
+        applied = true;
+      }
+    };
+  })();
+
   if (locationRequestInFlight) {
     setPrecheckFeedback("GPS-Abfrage läuft noch – bitte warten.");
     return;
@@ -406,11 +454,14 @@ function requestLocation(options = {}) {
     setFeedback(unsupportedMessage);
     setPrecheckFeedback("GPS nicht verfügbar – bitte Airport manuell setzen.");
     setLocationStatus("GPS nicht verfügbar – bitte Airport manuell setzen.");
-    ensureAirportFallback();
+    ensureAirportFallbackOnce();
     if (autoFetch) triggerAutoFlightFetch();
     if (typeof onFailure === "function") onFailure();
     return;
   }
+
+  clearLocationRetryTimer();
+  updateRetryButtons({ visible: false });
 
   locationRequestInFlight = true;
   setPrecheckFeedback("GPS wird abgefragt...");
@@ -433,9 +484,11 @@ function requestLocation(options = {}) {
         accuracy: accuracy != null ? Math.round(accuracy) : "",
         timestamp,
         statusMessage: `GPS gefunden${accuracy != null ? ` (${Math.round(accuracy)} m)` : ""}.`,
+        recordSuccessAt: timestamp,
       });
       setFeedback("GPS aktualisiert.");
       setPrecheckFeedback("GPS gesetzt – suche nächsten Airport.");
+      updateRetryButtons({ visible: false });
       if (autoFetch) triggerAutoFlightFetch();
       if (typeof onSuccess === "function") onSuccess();
       if (button) {
@@ -443,21 +496,42 @@ function requestLocation(options = {}) {
         button.classList.remove("is-loading");
         button.textContent = button.dataset.originalLabel || "GPS aktualisieren";
       }
+      clearLocationRetryTimer();
       locationRequestInFlight = false;
     },
     (error) => {
       console.warn("GPS Fehler", error);
+      const errorHints = [
+        "Standortfreigabe prüfen",
+        "Browser-/Geräte-Einstellungen kontrollieren",
+        "Airport manuell setzen, falls weiterhin fehlgeschlagen",
+      ];
+      const errorMessage = error?.message ? ` (${error.message})` : "";
+      const precheckMessage = `GPS fehlgeschlagen${errorMessage} – ${errorHints.join(" · ")}.`;
       setFeedback("GPS konnte nicht abgefragt werden. Bitte Airport manuell eintragen.");
-      setPrecheckFeedback("GPS fehlgeschlagen – bitte Airport manuell setzen.");
+      setPrecheckFeedback(precheckMessage);
       setLocationStatus("GPS nicht gefunden – nutze Standard MUC.");
-      ensureAirportFallback();
+      ensureAirportFallbackOnce();
       if (autoFetch) triggerAutoFlightFetch();
       if (typeof onFailure === "function") onFailure();
       if (button) {
-        button.disabled = false;
         button.classList.remove("is-loading");
         button.textContent = button.dataset.originalLabel || "GPS aktualisieren";
+        button.disabled = true;
       }
+      const retryLabel = `Auto-Retry in ${LOCATION_RETRY_DELAY_MS / 1000}s`;
+      updateRetryButtons({ visible: true, disabled: true, label: retryLabel });
+      clearLocationRetryTimer();
+      locationRetryTimeoutId = setTimeout(() => {
+        locationRetryTimeoutId = null;
+        updateRetryButtons({ visible: true, disabled: false, label: "GPS erneut versuchen" });
+        if (button) {
+          button.disabled = false;
+        }
+        if (allowRetry) {
+          requestLocation({ buttonId, onSuccess, onFailure, autoFetch, allowRetry: false });
+        }
+      }, LOCATION_RETRY_DELAY_MS);
       locationRequestInFlight = false;
     },
     { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
@@ -495,11 +569,14 @@ function updateLocationUi() {
     (state.location.latitude && state.location.longitude
       ? "GPS gesetzt."
       : "GPS noch nicht abgefragt.");
+  const lastSuccessLabel = state.lastLocationSuccessAt
+    ? ` (Zuletzt erfolgreich: ${new Date(state.lastLocationSuccessAt).toLocaleString()})`
+    : "";
   if (status) {
     status.textContent = statusLabel;
   }
   if (precheckStatus) {
-    precheckStatus.textContent = statusLabel;
+    precheckStatus.textContent = `${statusLabel}${lastSuccessLabel}`;
   }
 }
 
@@ -997,6 +1074,7 @@ function renderPrecheckScreen(container) {
     </div>
     <div class="location-actions">
       <button id="precheck-location-button" class="btn-neutral" type="button">GPS abfragen</button>
+      <button id="precheck-location-retry-button" class="btn-neutral ghost-btn" type="button" style="display: none;">Erneut versuchen</button>
       <button id="precheck-continue-button" class="btn-start" type="button">Weiter zur Prozess-Übersicht</button>
     </div>
   `;
@@ -1022,6 +1100,7 @@ function renderPrecheckScreen(container) {
   const airportInput = panel.querySelector("#precheck-airport");
   const directionInput = panel.querySelector("#precheck-direction");
   const gpsButton = panel.querySelector("#precheck-location-button");
+  const gpsRetryButton = panel.querySelector("#precheck-location-retry-button");
   const continueButton = panel.querySelector("#precheck-continue-button");
 
   if (airportInput) {
@@ -1056,6 +1135,15 @@ function renderPrecheckScreen(container) {
     gpsButton.addEventListener("click", () =>
       requestLocation({
         buttonId: "precheck-location-button",
+        autoFetch: true,
+      })
+    );
+  }
+
+  if (gpsRetryButton) {
+    gpsRetryButton.addEventListener("click", () =>
+      requestLocation({
+        buttonId: "precheck-location-retry-button",
         autoFetch: true,
       })
     );
@@ -1450,6 +1538,16 @@ function renderFlightDetails(container) {
   locationButton.textContent = "GPS aktualisieren";
   locationButton.addEventListener("click", () => requestLocation({ buttonId: "location-button", autoFetch: true }));
 
+  const locationRetryButton = document.createElement("button");
+  locationRetryButton.id = "location-retry-button";
+  locationRetryButton.className = "btn-neutral ghost-btn";
+  locationRetryButton.type = "button";
+  locationRetryButton.textContent = "GPS erneut versuchen";
+  locationRetryButton.style.display = "none";
+  locationRetryButton.addEventListener("click", () =>
+    requestLocation({ buttonId: "location-retry-button", autoFetch: true })
+  );
+
   const resetLocationButton = document.createElement("button");
   resetLocationButton.className = "btn-neutral";
   resetLocationButton.type = "button";
@@ -1460,6 +1558,7 @@ function renderFlightDetails(container) {
   });
 
   locationActions.appendChild(locationButton);
+  locationActions.appendChild(locationRetryButton);
   locationActions.appendChild(resetLocationButton);
 
   locationRow.appendChild(locationInfo);
