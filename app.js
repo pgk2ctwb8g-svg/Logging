@@ -1944,6 +1944,11 @@ function renderFlightPickerOverlay() {
   statsRow.appendChild(statsAirline);
   dialog.appendChild(statsRow);
 
+  const scrollHint = document.createElement("div");
+  scrollHint.className = "flight-picker-scroll-hint";
+  scrollHint.textContent = "Scrollen oder wischen, um alle vorgeschlagenen Flüge zu sehen.";
+  dialog.appendChild(scrollHint);
+
   const list = document.createElement("div");
   list.className = "flight-picker-list";
 
@@ -1981,7 +1986,11 @@ function renderFlightPickerOverlay() {
     list.appendChild(card);
   });
 
-  dialog.appendChild(list);
+  const scrollArea = document.createElement("div");
+  scrollArea.className = "flight-picker-scroll";
+  scrollArea.appendChild(list);
+
+  dialog.appendChild(scrollArea);
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
 }
