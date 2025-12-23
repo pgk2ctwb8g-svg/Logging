@@ -691,18 +691,24 @@ function setActiveProcess(processCode, startedAt) {
   renderProcessVisualization();
 }
 
-function clearActiveProcess(processCode) {
+function clearActiveProcess(processCode, endTime) {
   const active = state.activeProcesses?.[processCode];
-  if (!active) return;
-  const endTime = new Date().toISOString();
-  const durationMin =
-    active.startedAt && endTime ? Number(((new Date(endTime) - new Date(active.startedAt)) / 60000).toFixed(2)) : "";
+  if (!active) return false;
+  const resolvedEndTime = endTime || new Date().toISOString();
+  const startedAt = active.startedAt || active;
+
+  if (startedAt && new Date(resolvedEndTime) <= new Date(startedAt)) {
+    setFeedback("Endzeit muss nach Startzeit liegen.");
+    return false;
+  }
+
+  const durationMin = computeDurationMinutes(startedAt, resolvedEndTime);
 
   const completedEntry = {
     code: processCode,
     label: active.label ?? processCode,
-    startedAt: active.startedAt,
-    endedAt: endTime,
+    startedAt,
+    endedAt: resolvedEndTime,
     durationMin,
     completedAt: Date.now(),
   };
@@ -717,6 +723,7 @@ function clearActiveProcess(processCode) {
   const app = document.getElementById("app");
   if (app) renderProcessCards(app);
   renderProcessVisualization();
+  return true;
 }
 
 function getMissingRequiredFields(eventPayload) {
@@ -735,7 +742,7 @@ function getMissingRequiredFields(eventPayload) {
   return missing;
 }
 
-function addEvent(eventPayload) {
+function validateEventPayload(eventPayload) {
   const missingFields = getMissingRequiredFields(eventPayload);
 
   if (missingFields.length) {
@@ -749,34 +756,54 @@ function addEvent(eventPayload) {
     const missingLabels = missingFields.map((field) => labels[field] || field).join(", ");
     highlightMissingFields(missingFields);
     setFeedback(`Bitte Pflichtfelder ausfüllen: ${missingLabels}`);
-    return false;
+    return { valid: false };
   }
 
-  const now = new Date();
-  const eventTimestamp = now.toISOString();
-  const disruptionFlag = eventPayload.disruption_flag ?? (eventPayload.disruption_type && eventPayload.disruption_type !== "none");
+  const isEnd = eventPayload.event_type === "end";
+  if (isEnd && !state.activeProcesses[eventPayload.process_code]) {
+    setFeedback("Kein aktiver Prozess für diesen Abschluss gefunden.");
+    return { valid: false };
+  }
+
+  return { valid: true };
+}
+
+function resolveEventTimes(eventPayload, eventTimestamp) {
   const isStart = eventPayload.event_type === "start";
   const isEnd = eventPayload.event_type === "end";
+  const active = state.activeProcesses[eventPayload.process_code];
+  const activeStart = active?.startedAt || active || "";
 
-  const startTimeAbs = isStart
-    ? eventTimestamp
-    : state.activeProcesses[eventPayload.process_code]?.startedAt ||
-      state.activeProcesses[eventPayload.process_code] ||
-      "";
+  const startTimeAbs = isStart ? activeStart || eventTimestamp : activeStart;
   const endTimeAbs = isEnd ? eventTimestamp : "";
 
-  const durationMin =
-    startTimeAbs && endTimeAbs ? Number(((new Date(endTimeAbs) - new Date(startTimeAbs)) / 60000).toFixed(2)) : "";
+  return { startTimeAbs, endTimeAbs };
+}
 
-  const timeSlot = startTimeAbs
-    ? `${String(new Date(startTimeAbs).getHours()).padStart(2, "0")}-${String(
-        (new Date(startTimeAbs).getHours() + 1) % 24
-      ).padStart(2, "0")}`
-    : "";
+function computeDurationMinutes(startTimeAbs, endTimeAbs) {
+  if (!startTimeAbs || !endTimeAbs) return "";
+  return Number(((new Date(endTimeAbs) - new Date(startTimeAbs)) / 60000).toFixed(2));
+}
 
+function computeTimeSlot(startTimeAbs) {
+  if (!startTimeAbs) return "";
+  const startDate = new Date(startTimeAbs);
+  return `${String(startDate.getHours()).padStart(2, "0")}-${String((startDate.getHours() + 1) % 24).padStart(2, "0")}`;
+}
+
+function buildInstanceFingerprint({ turnaroundId, processCode, eventType, startTimeAbs, endTimeAbs }) {
+  return [turnaroundId, processCode, eventType, startTimeAbs || "", endTimeAbs || ""].join("|");
+}
+
+function buildEvent(eventPayload, eventTimestamp) {
+  const { startTimeAbs, endTimeAbs } = resolveEventTimes(eventPayload, eventTimestamp);
+  const durationMin = computeDurationMinutes(startTimeAbs, endTimeAbs);
+  const timeSlot = computeTimeSlot(startTimeAbs);
+
+  const disruptionFlag = eventPayload.disruption_flag ?? (eventPayload.disruption_type && eventPayload.disruption_type !== "none");
   const airportCode = (eventPayload.airport ?? state.currentFlight.airport ?? "").toUpperCase();
   const event = {
-    log_id: `${now.getTime()}-${state.events.length + 1}`,
+    log_id: `${new Date(eventTimestamp).getTime()}-${state.events.length + 1}`,
     flight_no: eventPayload.flight_no ?? state.currentFlight.flight_no ?? "",
     direction: eventPayload.direction ?? state.currentFlight.direction ?? "",
     airport: airportCode,
@@ -818,7 +845,33 @@ function addEvent(eventPayload) {
   );
   event.turnaround_id = turnaroundId;
   event.instance_id = `${turnaroundId}-${event.process_code}-${state.events.length + 1}`;
-  event.instance_fingerprint = `${turnaroundId}|${event.process_code}|${event.event_type}|${event.event_timestamp}`;
+  event.instance_fingerprint = buildInstanceFingerprint({
+    turnaroundId,
+    processCode: event.process_code,
+    eventType: event.event_type,
+    startTimeAbs,
+    endTimeAbs,
+  });
+
+  return event;
+}
+
+function isDuplicateEvent(fingerprint) {
+  return state.events.some((existing) => existing.instance_fingerprint === fingerprint);
+}
+
+function addEvent(eventPayload) {
+  const validation = validateEventPayload(eventPayload);
+  if (!validation.valid) return false;
+
+  const now = new Date();
+  const eventTimestamp = eventPayload.event_timestamp || now.toISOString();
+  const event = buildEvent(eventPayload, eventTimestamp);
+
+  if (isDuplicateEvent(event.instance_fingerprint)) {
+    setFeedback("Event bereits protokolliert – kein erneuter Log.");
+    return false;
+  }
 
   state = { ...state, events: [...state.events, event] };
   persistState();
@@ -826,7 +879,7 @@ function addEvent(eventPayload) {
   updateSessionSummary();
   clearFieldHighlights();
   setFeedback("");
-  return true;
+  return event;
 }
 
 function createSelect(name, options, { optional = false, label }) {
@@ -2623,19 +2676,19 @@ function updateSessionSummary() {
 
 function handleAction(process, action) {
   const values = getSelectedValues();
-  const success = addEvent({
+  const event = addEvent({
     process_code: process.code,
     process_label: process.label,
     event_type: action,
     ...values,
   });
 
-  if (!success) return;
+  if (!event) return;
 
   if (action === "start") {
-    setActiveProcess(process.code);
+    setActiveProcess(process.code, event.start_time_abs);
   } else if (action === "end") {
-    clearActiveProcess(process.code);
+    clearActiveProcess(process.code, event.end_time_abs);
   }
 }
 
