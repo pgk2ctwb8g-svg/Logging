@@ -9,6 +9,7 @@ const PROCESS_CODES = [
 
 const STORAGE_KEY = "mucsim_logger_state";
 const STORAGE_KEY_API = "mucsim_logger_flight_api";
+const AERODATABOX_RAPID_BASE_URL = "https://aerodatabox.p.rapidapi.com";
 
 const FLIGHT_TIME_WINDOW_MIN = 30;
 const MAX_FLIGHT_SUGGESTIONS = 10;
@@ -54,7 +55,7 @@ const DEFAULT_STATE = {
     windowMinutes: FLIGHT_TIME_WINDOW_MIN,
   },
   flightApiConfig: {
-    url: "",
+    url: AERODATABOX_RAPID_BASE_URL,
     apiKey: "",
   },
   autoFetchedAfterStart: false,
@@ -139,15 +140,7 @@ function persistStateDebounced(delay = 250) {
 }
 
 function getDefaultFlightApiUrl() {
-  try {
-    if (typeof window !== "undefined" && window.location?.origin) {
-      const base = window.location.origin.replace(/\/$/, "");
-      return `${base}/flights`;
-    }
-  } catch (error) {
-    console.warn("Konnte Default-API nicht ableiten.", error);
-  }
-  return "http://localhost:8788/flights";
+  return AERODATABOX_RAPID_BASE_URL;
 }
 
 function loadFlightApiConfig() {
@@ -158,7 +151,7 @@ function loadFlightApiConfig() {
       const parsed = JSON.parse(stored);
       if (parsed && typeof parsed === "object") {
         return {
-          url: parsed.url || windowApiConfig.url || "",
+          url: parsed.url || windowApiConfig.url || AERODATABOX_RAPID_BASE_URL,
           apiKey: parsed.apiKey || windowApiConfig.apiKey || "",
         };
       }
@@ -166,7 +159,7 @@ function loadFlightApiConfig() {
   } catch (error) {
     console.warn("Konnte API-Config nicht laden.", error);
   }
-  return { url: "", apiKey: "" };
+  return { url: AERODATABOX_RAPID_BASE_URL, apiKey: "" };
 }
 
 function persistFlightApiConfig(config) {
@@ -174,7 +167,7 @@ function persistFlightApiConfig(config) {
     localStorage.setItem(
       STORAGE_KEY_API,
       JSON.stringify({
-        url: config?.url || "",
+        url: config?.url || AERODATABOX_RAPID_BASE_URL,
         apiKey: config?.apiKey || "",
       })
     );
@@ -233,7 +226,7 @@ function loadState() {
               windowMinutes: FLIGHT_TIME_WINDOW_MIN,
             },
           flightApiConfig: {
-            url: storedApiConfig.url || parsed.flightApiConfig?.url || windowApiConfig.url || "",
+            url: storedApiConfig.url || parsed.flightApiConfig?.url || windowApiConfig.url || AERODATABOX_RAPID_BASE_URL,
             apiKey: storedApiConfig.apiKey || parsed.flightApiConfig?.apiKey || windowApiConfig.apiKey || "",
           },
           autoFetchedAfterStart: parsed.autoFetchedAfterStart ?? false,
@@ -248,7 +241,7 @@ function loadState() {
   return {
     ...DEFAULT_STATE,
     flightApiConfig: {
-      url: fallbackApiConfig.url || windowApiConfig.url || "",
+      url: fallbackApiConfig.url || windowApiConfig.url || AERODATABOX_RAPID_BASE_URL,
       apiKey: fallbackApiConfig.apiKey || windowApiConfig.apiKey || "",
     },
     started: false,
@@ -333,13 +326,16 @@ function setFlightApiConfig(field, value) {
   if (!["url", "apiKey"].includes(field)) return;
   state = {
     ...state,
-    flightApiConfig: { ...state.flightApiConfig, [field]: value },
+    flightApiConfig: {
+      ...state.flightApiConfig,
+      [field]: field === "url" ? AERODATABOX_RAPID_BASE_URL : value,
+    },
   };
   persistStateDebounced();
 }
 
 function clearFlightApiConfig() {
-  state = { ...state, flightApiConfig: { url: "", apiKey: "" } };
+  state = { ...state, flightApiConfig: { url: AERODATABOX_RAPID_BASE_URL, apiKey: "" } };
   persistState();
 }
 
@@ -373,7 +369,17 @@ function promptForAirport() {
   const airport = window.prompt("Bitte IATA-Code des Flughafens eingeben (z.B. MUC):", state.currentFlight.airport || "");
   if (airport != null && airport.trim()) {
     setCurrentFlight("airport", airport.trim().toUpperCase());
-    setFeedback("Airport gesetzt.");
+    const providedKey = window.prompt(
+      "Bitte deinen AeroDataBox RapidAPI Key eingeben (wird lokal gespeichert):",
+      state.flightApiConfig.apiKey || ""
+    );
+    if (providedKey != null && providedKey.trim()) {
+      setFlightApiConfig("url", AERODATABOX_RAPID_BASE_URL);
+      setFlightApiConfig("apiKey", providedKey.trim());
+      setFeedback("Airport und RapidAPI Key gesetzt.");
+    } else {
+      setFeedback("Airport gesetzt. Kein RapidAPI Key hinterlegt.");
+    }
   } else {
     setFeedback("Kein Airport gesetzt. Bitte manuell nachtragen.");
   }
@@ -1622,14 +1628,10 @@ function renderFlightSuggestions(container) {
   const apiGrid = document.createElement("div");
   apiGrid.className = "field-grid flight-api-grid";
 
-  apiGrid.appendChild(
-    createInputField({
-      id: "flight-api-url",
-      label: "Flug-API URL (optional)",
-      value: state.flightApiConfig.url,
-      placeholder: "https://api.example.com/flights",
-    })
-  );
+  const apiNote = document.createElement("div");
+  apiNote.className = "card-hint";
+  apiNote.textContent = `AeroDataBox RapidAPI wird fest genutzt (${AERODATABOX_RAPID_BASE_URL}). Bitte nur den persönlichen Key setzen.`;
+  apiGrid.appendChild(apiNote);
 
   apiGrid.appendChild(
     createInputField({
@@ -1639,13 +1641,6 @@ function renderFlightSuggestions(container) {
       placeholder: "wird als X-RapidAPI-Key gesendet",
     })
   );
-
-  const apiUrlInput = apiGrid.querySelector("#flight-api-url");
-  if (apiUrlInput) {
-    apiUrlInput.addEventListener("input", (event) => {
-      setFlightApiConfig("url", event.target.value.trim());
-    });
-  }
 
   const apiKeyInput = apiGrid.querySelector("#flight-api-key");
   if (apiKeyInput) {
@@ -1657,8 +1652,8 @@ function renderFlightSuggestions(container) {
   const clearApiButton = document.createElement("button");
   clearApiButton.type = "button";
   clearApiButton.className = "btn-neutral ghost-btn";
-  clearApiButton.textContent = "API-URL & Token löschen";
-  clearApiButton.disabled = !state.flightApiConfig.url && !state.flightApiConfig.apiKey;
+  clearApiButton.textContent = "RapidAPI Key löschen";
+  clearApiButton.disabled = !state.flightApiConfig.apiKey;
   clearApiButton.addEventListener("click", () => {
     clearFlightApiConfig();
     renderFlightSuggestions(document.getElementById("app"));
@@ -1973,67 +1968,28 @@ async function fetchFlightSuggestions(options = {}) {
   const end = now + FLIGHT_TIME_WINDOW_MIN * 60;
 
   const windowApiConfig = typeof window !== "undefined" ? window.flightApiConfig || {} : {};
-  const defaultApiUrl = getDefaultFlightApiUrl();
   const config = {
-    url: state.flightApiConfig?.url || windowApiConfig.url || defaultApiUrl || "",
+    url: AERODATABOX_RAPID_BASE_URL,
     apiKey: state.flightApiConfig?.apiKey || windowApiConfig.apiKey || "",
   };
 
   const hasRapidApiKey = Boolean(config.apiKey);
-  const hasCustomApiUrl = Boolean(config.url && (!defaultApiUrl || config.url !== defaultApiUrl));
-  const pointsToRapidHost = isAerodataboxRapidUrl(config.url);
-  const shouldForceRapidPath = pointsToRapidHost && hasRapidApiKey;
   let flights = [];
   let status = "idle";
   let errorMessage = "";
   let sourceLabel = "api";
   let analysis = "";
 
-  if (!config.url && !config.apiKey) {
+  if (!hasRapidApiKey) {
     flights = buildSampleFlights(state.currentFlight.airport);
     sourceLabel = "sample";
-    analysis = `Samples genutzt – max. ${MAX_FLIGHT_SUGGESTIONS} Flüge.`;
-  } else if (config?.url && (hasCustomApiUrl || !hasRapidApiKey) && !shouldForceRapidPath) {
+    analysis = "Bitte RapidAPI Key setzen, um Live-Flüge zu laden.";
+  } else {
     try {
-      const params = new URLSearchParams({
-        airport: state.currentFlight.airport,
-        start: new Date(start * 1000).toISOString(),
-        end: new Date(end * 1000).toISOString(),
-        direction: state.currentFlight.direction || "both",
-      });
-      const response = await fetch(`${config.url}?${params.toString()}`, {
-        headers: config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {},
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      const data = await response.json();
-      flights =
-        Array.isArray(data?.flights) && data.flights.length
-          ? data.flights
-          : Array.isArray(data)
-            ? data
-            : [];
-      analysis = flights.length
-        ? `API ok: ${flights.length} Flüge im ±${FLIGHT_TIME_WINDOW_MIN} Min Fenster.`
-        : `API ohne Treffer – Zeitraum/Airport prüfen.`;
-    } catch (error) {
-      console.warn("Konnte Flug-API nicht laden.", error);
-      flights = buildSampleFlights(state.currentFlight.airport);
-      status = "idle";
-      errorMessage = "";
-      sourceLabel = "sample_fallback";
-      analysis = `API-Fehler: ${error.message || "unbekannt"}. Samples angezeigt.`;
-    }
-  } else if (hasRapidApiKey) {
-    try {
-      const rapidNote = shouldForceRapidPath
-        ? "AeroDataBox RapidAPI erkannt. "
-        : "";
       flights = await fetchAerodataboxRapid({ airport: state.currentFlight.airport, apiKey: config.apiKey });
       analysis = flights.length
-        ? `${rapidNote}${flights.length} Flüge über RapidAPI.`
-        : `${rapidNote}Keine Flüge über RapidAPI.`;
+        ? `${flights.length} Flüge über RapidAPI geladen.`
+        : "Keine Flüge über RapidAPI gefunden.";
     } catch (error) {
       flights = buildSampleFlights(state.currentFlight.airport);
       status = "idle";
@@ -2041,12 +1997,6 @@ async function fetchFlightSuggestions(options = {}) {
       sourceLabel = "sample_fallback";
       analysis = `RapidAPI-Fehler: ${error.message || "unbekannt"}. Samples angezeigt.`;
     }
-  } else {
-    flights = buildSampleFlights(state.currentFlight.airport);
-    status = "idle";
-    errorMessage = "";
-    sourceLabel = "sample_fallback";
-    analysis = "API nicht nutzbar – Samples geladen.";
   }
 
   if (!flights.length) {
