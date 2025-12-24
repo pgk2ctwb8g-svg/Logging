@@ -16,6 +16,28 @@ const MAX_FLIGHT_SUGGESTIONS = 10;
 const NEAREST_AIRPORT_MAX_DISTANCE_KM = 100;
 const LOCATION_RETRY_DELAY_MS = 5000;
 
+function buildAerodataboxRapidUrl(airportCode) {
+  const airport = (airportCode || "").trim().toUpperCase();
+
+  if (!airport) {
+    return `${AERODATABOX_RAPID_BASE_URL}/flights/airports/iata/`;
+  }
+
+  const params = new URLSearchParams({
+    offsetMinutes: "-30",
+    durationMinutes: String(FLIGHT_TIME_WINDOW_MIN * 2),
+    withLeg: "true",
+    direction: "Both",
+    withCancelled: "false",
+    withCodeshared: "true",
+    withCargo: "false",
+    withPrivate: "false",
+    withLocation: "false",
+  });
+
+  return `${AERODATABOX_RAPID_BASE_URL}/flights/airports/iata/${airport}?${params.toString()}`;
+}
+
 const DEFAULT_STATE = {
   started: false,
   flightPickerOpen: false,
@@ -293,11 +315,21 @@ function updateRetryButtons({ visible, disabled, label }) {
 function setCurrentFlight(field, value, options = {}) {
   if (!(field in state.currentFlight)) return;
   const { trackSuggestion, persistNow, deferPersist } = options;
-  state = {
+  const normalizedValue = field === "airport" && typeof value === "string" ? value.toUpperCase() : value;
+  const updatedState = {
     ...state,
-    currentFlight: { ...state.currentFlight, [field]: value },
-    ...(trackSuggestion ? { lastAirportSuggestion: value || "" } : {}),
+    currentFlight: { ...state.currentFlight, [field]: normalizedValue },
+    ...(trackSuggestion ? { lastAirportSuggestion: normalizedValue || "" } : {}),
   };
+
+  if (field === "airport") {
+    updatedState.flightApiConfig = {
+      ...state.flightApiConfig,
+      url: buildAerodataboxRapidUrl(normalizedValue),
+    };
+  }
+
+  state = updatedState;
   if (persistNow) {
     cancelScheduledPersist();
     persistState();
@@ -328,7 +360,7 @@ function setFlightApiConfig(field, value) {
     ...state,
     flightApiConfig: {
       ...state.flightApiConfig,
-      [field]: field === "url" ? AERODATABOX_RAPID_BASE_URL : value,
+      [field]: field === "url" ? value || AERODATABOX_RAPID_BASE_URL : value,
     },
   };
   persistStateDebounced();
@@ -374,7 +406,7 @@ function promptForAirport() {
       state.flightApiConfig.apiKey || ""
     );
     if (providedKey != null && providedKey.trim()) {
-      setFlightApiConfig("url", AERODATABOX_RAPID_BASE_URL);
+      setFlightApiConfig("url", buildAerodataboxRapidUrl(airport));
       setFlightApiConfig("apiKey", providedKey.trim());
       setFeedback("Airport und RapidAPI Key gesetzt.");
     } else {
@@ -1630,7 +1662,7 @@ function renderFlightSuggestions(container) {
 
   const apiNote = document.createElement("div");
   apiNote.className = "card-hint";
-  apiNote.textContent = `AeroDataBox RapidAPI wird fest genutzt (${AERODATABOX_RAPID_BASE_URL}). Bitte nur den persönlichen Key setzen.`;
+  apiNote.textContent = `AeroDataBox RapidAPI wird automatisch mit dem gesetzten Airport genutzt (${state.flightApiConfig.url || AERODATABOX_RAPID_BASE_URL}). Bitte nur den persönlichen Key setzen.`;
   apiGrid.appendChild(apiNote);
 
   apiGrid.appendChild(
@@ -1883,19 +1915,7 @@ function isAerodataboxRapidUrl(url) {
 
 async function fetchAerodataboxRapid({ airport, apiKey }) {
   if (!airport || !apiKey) return [];
-  const params = new URLSearchParams({
-    offsetMinutes: "-30",
-    durationMinutes: String(FLIGHT_TIME_WINDOW_MIN * 2),
-    withLeg: "true",
-    direction: "Both",
-    withCancelled: "false",
-    withCodeshared: "true",
-    withCargo: "false",
-    withPrivate: "false",
-    withLocation: "false",
-  });
-
-  const url = `https://aerodatabox.p.rapidapi.com/flights/airports/iata/${airport}?${params.toString()}`;
+  const url = buildAerodataboxRapidUrl(airport);
   const response = await fetch(url, {
     method: "GET",
     headers: {
@@ -1951,6 +1971,8 @@ async function fetchFlightSuggestions(options = {}) {
     return;
   }
 
+  const requestUrl = buildAerodataboxRapidUrl(state.currentFlight.airport);
+
   state = {
     ...state,
     flightSuggestionStatus: source === "auto" ? "loading_auto" : "loading",
@@ -1959,6 +1981,7 @@ async function fetchFlightSuggestions(options = {}) {
     flightSuggestionAnalysis: "",
     flightSuggestionStats: { count: 0, topAirline: "", windowMinutes: FLIGHT_TIME_WINDOW_MIN },
     flightPickerOpen: false,
+    flightApiConfig: { ...state.flightApiConfig, url: requestUrl },
   };
   persistState();
   renderApp();
@@ -1969,7 +1992,7 @@ async function fetchFlightSuggestions(options = {}) {
 
   const windowApiConfig = typeof window !== "undefined" ? window.flightApiConfig || {} : {};
   const config = {
-    url: AERODATABOX_RAPID_BASE_URL,
+    url: requestUrl || AERODATABOX_RAPID_BASE_URL,
     apiKey: state.flightApiConfig?.apiKey || windowApiConfig.apiKey || "",
   };
 
