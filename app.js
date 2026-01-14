@@ -15,6 +15,7 @@ const FLIGHT_TIME_WINDOW_MIN = 30;
 const MAX_FLIGHT_SUGGESTIONS = 10;
 const NEAREST_AIRPORT_MAX_DISTANCE_KM = 100;
 const LOCATION_RETRY_DELAY_MS = 5000;
+const FLIGHT_COLORS = ["#0ea5e9", "#22c55e", "#f97316", "#a855f7", "#f43f5e", "#14b8a6", "#eab308", "#6366f1"];
 
 function buildAerodataboxRapidUrl(airportCode) {
   const airport = (airportCode || "").trim().toUpperCase();
@@ -48,6 +49,7 @@ const DEFAULT_FLIGHT = {
   to_airport: "",
   airline_code: "",
   aircraft_type: "",
+  color: "",
 };
 
 const DEFAULT_STATE = {
@@ -147,6 +149,26 @@ function getDefaultFlightDate() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function deriveFlightColor(flight) {
+  const key = [flight.flight_no, flight.airline_code, flight.from_airport, flight.to_airport, flight.airport]
+    .join("")
+    .trim();
+  if (!key) return FLIGHT_COLORS[0];
+  const hash = Array.from(key).reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  return FLIGHT_COLORS[hash % FLIGHT_COLORS.length];
+}
+
+function getFlightColor(flight) {
+  return flight?.color || deriveFlightColor(flight || {});
+}
+
+function createFlightColorDot(color, extraClass = "") {
+  const dot = document.createElement("span");
+  dot.className = `flight-color-dot${extraClass ? ` ${extraClass}` : ""}`;
+  dot.style.backgroundColor = color;
+  return dot;
+}
+
 function normalizeFlight(flight) {
   const merged = { ...DEFAULT_FLIGHT, ...(flight || {}) };
   return {
@@ -156,6 +178,7 @@ function normalizeFlight(flight) {
     to_airport: (merged.to_airport || "").toUpperCase(),
     airline_code: (merged.airline_code || "").toUpperCase(),
     aircraft_type: (merged.aircraft_type || "").toUpperCase(),
+    color: merged.color || deriveFlightColor(merged),
   };
 }
 
@@ -1421,7 +1444,11 @@ function renderFlightDetails(container) {
           ? "Arr"
           : "Dep"
         : "–";
-      chip.textContent = `${pinnedContext.flight.flight_no || "Unbekannt"} · ${directionLabel}`;
+      const chipDot = createFlightColorDot(getFlightColor(pinnedContext.flight));
+      const chipText = document.createElement("span");
+      chipText.textContent = `${pinnedContext.flight.flight_no || "Unbekannt"} · ${directionLabel}`;
+      chip.appendChild(chipDot);
+      chip.appendChild(chipText);
       chip.addEventListener("click", () => setActiveFlightId(flightId));
       tabList.appendChild(chip);
     });
@@ -1776,13 +1803,25 @@ function createFlightSuggestionGrid({ compact = false } = {}) {
 
     const header = document.createElement("div");
     header.className = compact ? "compact-flight-header" : "process-header";
-    header.innerHTML = `
-      <div class="flight-heading">
-        <span class="flight-chip">${flight.flight_no || "Unbekannt"}</span>
-        <span class="flight-route">${flight.from_airport || "-"} → ${flight.to_airport || "-"}</span>
-      </div>
-      <div class="flight-meta">${flight.direction ? (flight.direction === "arrival" ? "Arrival" : "Departure") : "–"} · ${flight.airline || "Airline n/a"}</div>
-    `;
+    const heading = document.createElement("div");
+    heading.className = "flight-heading";
+    const colorDot = createFlightColorDot(getFlightColor(flight), "is-small");
+    const chip = document.createElement("span");
+    chip.className = "flight-chip";
+    chip.textContent = flight.flight_no || "Unbekannt";
+    const route = document.createElement("span");
+    route.className = "flight-route";
+    route.textContent = `${flight.from_airport || "-"} → ${flight.to_airport || "-"}`;
+    heading.appendChild(colorDot);
+    heading.appendChild(chip);
+    heading.appendChild(route);
+    const meta = document.createElement("div");
+    meta.className = "flight-meta";
+    meta.textContent = `${flight.direction ? (flight.direction === "arrival" ? "Arrival" : "Departure") : "–"} · ${
+      flight.airline || "Airline n/a"
+    }`;
+    header.appendChild(heading);
+    header.appendChild(meta);
     card.appendChild(header);
 
     const description = document.createElement("div");
@@ -2151,6 +2190,7 @@ function applyFlightSelection(flight) {
       gate: flight.gate || "",
       stand: flight.stand || "",
       aircraft_type: flight.aircraft_type || "",
+      color: flight.color || deriveFlightColor(flight),
     },
   };
   persistState();
@@ -2432,6 +2472,53 @@ function renderProcessCards(container) {
   header.appendChild(title);
   header.appendChild(helper);
   panel.appendChild(header);
+
+  const contextHeader = document.createElement("div");
+  contextHeader.className = "process-context-header";
+  const contextMain = document.createElement("div");
+  contextMain.className = "process-context-main";
+
+  const activeDot = createFlightColorDot(getFlightColor(activeFlight));
+  const contextTitle = document.createElement("span");
+  contextTitle.className = "process-context-title";
+  contextTitle.textContent = "Aktiver Flug";
+  const directionLabel = activeFlight.direction ? (activeFlight.direction === "arrival" ? "ARR" : "DEP") : "–";
+  const gateStand = [
+    activeFlight.gate ? `Gate ${activeFlight.gate}` : "Gate –",
+    activeFlight.stand ? `Stand ${activeFlight.stand}` : "Stand –",
+  ].join(" / ");
+  const aircraftLabel = activeFlight.aircraft_type ? activeFlight.aircraft_type : "Typ –";
+  const contextValue = document.createElement("span");
+  contextValue.className = "process-context-value";
+  contextValue.textContent = `${activeFlight.flight_no || "nicht gesetzt"} · ${directionLabel} · ${gateStand} · ${aircraftLabel}`;
+
+  contextMain.appendChild(activeDot);
+  contextMain.appendChild(contextTitle);
+  contextMain.appendChild(contextValue);
+  contextHeader.appendChild(contextMain);
+
+  if (state.lastAppliedFlight?.flight_no) {
+    const lastRow = document.createElement("div");
+    lastRow.className = "process-context-secondary";
+    const lastDot = createFlightColorDot(getFlightColor(state.lastAppliedFlight));
+    const lastLabel = document.createElement("span");
+    lastLabel.className = "process-context-secondary-label";
+    lastLabel.textContent = "Zuletzt geloggt";
+    const lastValue = document.createElement("span");
+    lastValue.className = "process-context-secondary-value";
+    const lastDirection = state.lastAppliedFlight.direction
+      ? state.lastAppliedFlight.direction === "arrival"
+        ? "ARR"
+        : "DEP"
+      : "–";
+    lastValue.textContent = `${state.lastAppliedFlight.flight_no || "n/a"} · ${lastDirection}`;
+    lastRow.appendChild(lastDot);
+    lastRow.appendChild(lastLabel);
+    lastRow.appendChild(lastValue);
+    contextHeader.appendChild(lastRow);
+  }
+
+  panel.appendChild(contextHeader);
 
   const list = document.createElement("div");
   list.className = "process-list";
