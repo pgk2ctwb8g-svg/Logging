@@ -88,6 +88,11 @@ const DEFAULT_STATE = {
     apiKey: "",
   },
   autoFetchedAfterStart: false,
+  logFilters: {
+    flights: [],
+    eventType: "",
+    process: "",
+  },
 };
 
 const DROPDOWN_OPTIONS = {
@@ -114,6 +119,12 @@ const DROPDOWN_OPTIONS = {
     { value: "medium", label: "Mittel" },
     { value: "low", label: "Niedrig" },
   ],
+};
+
+const EVENT_TYPE_LABELS = {
+  start: "Start",
+  end: "Ende",
+  instance: "Instanz",
 };
 
 const AIRPORTS = [
@@ -2829,6 +2840,79 @@ function renderLogPanel(container) {
     feedback.style.visibility = "hidden";
     logPanel.appendChild(feedback);
 
+    const filterBar = document.createElement("div");
+    filterBar.className = "log-filter-bar";
+
+    const flightGroup = document.createElement("div");
+    flightGroup.className = "field-group";
+    const flightLabel = document.createElement("label");
+    flightLabel.textContent = "Flugfilter (Mehrfachauswahl)";
+    const flightSelect = document.createElement("select");
+    flightSelect.id = "log-filter-flight";
+    flightSelect.multiple = true;
+    flightSelect.addEventListener("change", () => {
+      const selected = Array.from(flightSelect.selectedOptions).map((option) => option.value);
+      updateLogFilters({ flights: selected });
+    });
+    flightLabel.appendChild(flightSelect);
+    flightGroup.appendChild(flightLabel);
+
+    const eventGroup = document.createElement("div");
+    eventGroup.className = "field-group";
+    const eventLabel = document.createElement("label");
+    eventLabel.textContent = "Event-Typ";
+    const eventSelect = document.createElement("select");
+    eventSelect.id = "log-filter-event";
+    eventSelect.addEventListener("change", (event) => updateLogFilters({ eventType: event.target.value }));
+    eventLabel.appendChild(eventSelect);
+    eventGroup.appendChild(eventLabel);
+
+    const processGroup = document.createElement("div");
+    processGroup.className = "field-group";
+    const processLabel = document.createElement("label");
+    processLabel.textContent = "Prozess";
+    const processSelect = document.createElement("select");
+    processSelect.id = "log-filter-process";
+    processSelect.addEventListener("change", (event) => updateLogFilters({ process: event.target.value }));
+    processLabel.appendChild(processSelect);
+    processGroup.appendChild(processLabel);
+
+    const jumpGroup = document.createElement("div");
+    jumpGroup.className = "log-jump-group";
+    const jumpLabel = document.createElement("span");
+    jumpLabel.className = "log-jump-label";
+    jumpLabel.textContent = "Navigation";
+    const jumpRow = document.createElement("div");
+    jumpRow.className = "log-jump-row";
+
+    const jumpCurrentButton = document.createElement("button");
+    jumpCurrentButton.id = "jump-current-flight";
+    jumpCurrentButton.type = "button";
+    jumpCurrentButton.className = "btn-neutral btn-small";
+    jumpCurrentButton.textContent = "Zum aktuellen Flug";
+    jumpCurrentButton.addEventListener("click", () => {
+      if (!state.activeFlightId) return;
+      jumpToLogItem(`li[data-flight-id="${state.activeFlightId}"]`);
+    });
+
+    const jumpLastButton = document.createElement("button");
+    jumpLastButton.id = "jump-last-event";
+    jumpLastButton.type = "button";
+    jumpLastButton.className = "btn-neutral btn-small";
+    jumpLastButton.textContent = "Zum letzten Event";
+    jumpLastButton.addEventListener("click", () => jumpToLogItem("last"));
+
+    jumpRow.appendChild(jumpCurrentButton);
+    jumpRow.appendChild(jumpLastButton);
+    jumpGroup.appendChild(jumpLabel);
+    jumpGroup.appendChild(jumpRow);
+
+    filterBar.appendChild(flightGroup);
+    filterBar.appendChild(eventGroup);
+    filterBar.appendChild(processGroup);
+    filterBar.appendChild(jumpGroup);
+    logPanel.appendChild(filterBar);
+
     const list = document.createElement("ul");
     list.id = "log-list";
     list.className = "log-list";
@@ -3005,14 +3089,275 @@ function formatEventMessage(event) {
     `Observation: ${event.observation_quality || "-"}`;
 }
 
+function getLogFilters() {
+  const filters = state.logFilters || {};
+  return {
+    flights: Array.isArray(filters.flights) ? filters.flights : [],
+    eventType: filters.eventType || "",
+    process: filters.process || "",
+  };
+}
+
+function updateLogFilters(nextFilters) {
+  const merged = { ...getLogFilters(), ...nextFilters };
+  state = { ...state, logFilters: merged };
+  persistStateDebounced();
+  populateLog();
+}
+
+function getDropdownLabel(optionKey, value) {
+  const options = DROPDOWN_OPTIONS[optionKey] || [];
+  const match = options.find((option) => option.value === value);
+  return match ? match.label : value || "-";
+}
+
+function getLogEntries() {
+  return Object.entries(state.flightContexts || {}).flatMap(([flightId, context]) => {
+    const events = Array.isArray(context?.events) ? context.events : [];
+    return events.map((event) => ({
+      ...event,
+      _flightId: flightId,
+      _flight: context?.flight || DEFAULT_FLIGHT,
+    }));
+  });
+}
+
+function buildFlightFilterLabel(context, flightId) {
+  const flight = context?.flight || DEFAULT_FLIGHT;
+  const flightNo = flight.flight_no || "Unbekannter Flug";
+  const direction =
+    flight.direction === "arrival" ? "Arrival" : flight.direction === "departure" ? "Departure" : "Richtung?";
+  const airport = flight.airport || "-";
+  const count = context?.events?.length || 0;
+  return `${flightNo} · ${direction} · ${airport} (${count})`;
+}
+
+function getLogFilterOptions(entries) {
+  const flightOptions = Object.entries(state.flightContexts || {}).map(([flightId, context]) => ({
+    value: flightId,
+    label: buildFlightFilterLabel(context, flightId),
+  }));
+
+  const eventTypes = new Set(entries.map((entry) => entry.event_type).filter(Boolean));
+  const eventTypeOptions = Array.from(eventTypes).map((type) => ({
+    value: type,
+    label: EVENT_TYPE_LABELS[type] || type,
+  }));
+
+  const knownProcessCodes = PROCESS_CODES.map((process) => ({
+    value: process.code,
+    label: `${process.code} – ${process.label}`,
+  }));
+  const extraCodes = Array.from(new Set(entries.map((entry) => entry.process_code).filter(Boolean)))
+    .filter((code) => !PROCESS_CODES.some((process) => process.code === code))
+    .map((code) => ({ value: code, label: code }));
+
+  return {
+    flightOptions,
+    eventTypeOptions,
+    processOptions: [...knownProcessCodes, ...extraCodes],
+  };
+}
+
+function sanitizeLogFilters(filters, options) {
+  const flightSet = new Set(options.flightOptions.map((option) => option.value));
+  const eventSet = new Set(options.eventTypeOptions.map((option) => option.value));
+  const processSet = new Set(options.processOptions.map((option) => option.value));
+  return {
+    flights: filters.flights.filter((id) => flightSet.has(id)),
+    eventType: eventSet.has(filters.eventType) ? filters.eventType : "",
+    process: processSet.has(filters.process) ? filters.process : "",
+  };
+}
+
+function createLogMetaItem(label, value, className = "") {
+  const wrapper = document.createElement("div");
+  wrapper.className = `log-meta-item${className ? ` ${className}` : ""}`;
+
+  const labelEl = document.createElement("span");
+  labelEl.className = "log-meta-label";
+  labelEl.textContent = label;
+
+  const valueEl = document.createElement("span");
+  valueEl.className = "log-meta-value";
+  valueEl.textContent = value || "-";
+
+  wrapper.appendChild(labelEl);
+  wrapper.appendChild(valueEl);
+  return wrapper;
+}
+
+function createLogDetailItem(label, value) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "log-detail-item";
+
+  const title = document.createElement("span");
+  title.className = "log-detail-label";
+  title.textContent = label;
+
+  const detail = document.createElement("span");
+  detail.className = "log-detail-value";
+  detail.textContent = value || "-";
+
+  wrapper.appendChild(title);
+  wrapper.appendChild(detail);
+  return wrapper;
+}
+
+function highlightLogItem(item) {
+  if (!item) return;
+  item.classList.add("is-highlighted");
+  window.setTimeout(() => item.classList.remove("is-highlighted"), 1200);
+}
+
+function jumpToLogItem(selector) {
+  const list = document.getElementById("log-list");
+  if (!list) return;
+  const item = selector === "last" ? list.firstElementChild : list.querySelector(selector);
+  if (item) {
+    item.scrollIntoView({ behavior: "smooth", block: "start" });
+    highlightLogItem(item);
+  }
+}
+
 function populateLog() {
   const list = document.getElementById("log-list");
   if (!list) return;
   list.innerHTML = "";
-  const activeContext = getActiveFlightContext();
-  [...(activeContext?.events || [])].reverse().forEach((event) => {
+
+  const entries = getLogEntries();
+  const options = getLogFilterOptions(entries);
+  const sanitizedFilters = sanitizeLogFilters(getLogFilters(), options);
+
+  if (
+    sanitizedFilters.flights.length !== getLogFilters().flights.length ||
+    sanitizedFilters.eventType !== getLogFilters().eventType ||
+    sanitizedFilters.process !== getLogFilters().process
+  ) {
+    state = { ...state, logFilters: sanitizedFilters };
+    persistStateDebounced();
+  }
+
+  const filters = sanitizedFilters;
+  const filtered = entries
+    .filter((entry) => (filters.flights.length ? filters.flights.includes(entry._flightId) : true))
+    .filter((entry) => (filters.eventType ? entry.event_type === filters.eventType : true))
+    .filter((entry) => (filters.process ? entry.process_code === filters.process : true))
+    .sort((a, b) => new Date(b.event_timestamp || 0) - new Date(a.event_timestamp || 0));
+
+  const flightSelect = document.getElementById("log-filter-flight");
+  const eventSelect = document.getElementById("log-filter-event");
+  const processSelect = document.getElementById("log-filter-process");
+  if (flightSelect) {
+    flightSelect.innerHTML = "";
+    options.flightOptions.forEach((option) => {
+      const opt = document.createElement("option");
+      opt.value = option.value;
+      opt.textContent = option.label;
+      if (filters.flights.includes(option.value)) {
+        opt.selected = true;
+      }
+      flightSelect.appendChild(opt);
+    });
+    flightSelect.size = Math.min(Math.max(options.flightOptions.length, 2), 6);
+  }
+  if (eventSelect) {
+    eventSelect.innerHTML = "";
+    const allOption = document.createElement("option");
+    allOption.value = "";
+    allOption.textContent = "Alle Event-Typen";
+    eventSelect.appendChild(allOption);
+    options.eventTypeOptions.forEach((option) => {
+      const opt = document.createElement("option");
+      opt.value = option.value;
+      opt.textContent = option.label;
+      eventSelect.appendChild(opt);
+    });
+    eventSelect.value = filters.eventType;
+  }
+  if (processSelect) {
+    processSelect.innerHTML = "";
+    const allOption = document.createElement("option");
+    allOption.value = "";
+    allOption.textContent = "Alle Prozesse";
+    processSelect.appendChild(allOption);
+    options.processOptions.forEach((option) => {
+      const opt = document.createElement("option");
+      opt.value = option.value;
+      opt.textContent = option.label;
+      processSelect.appendChild(opt);
+    });
+    processSelect.value = filters.process;
+  }
+
+  const jumpCurrentButton = document.getElementById("jump-current-flight");
+  const jumpLastButton = document.getElementById("jump-last-event");
+  const hasCurrentFlight = filtered.some((entry) => entry._flightId === state.activeFlightId);
+  if (jumpCurrentButton) {
+    jumpCurrentButton.disabled = !hasCurrentFlight;
+  }
+  if (jumpLastButton) {
+    jumpLastButton.disabled = filtered.length === 0;
+  }
+
+  if (!filtered.length) {
+    const empty = document.createElement("li");
+    empty.className = "log-empty";
+    empty.textContent = "Keine Events für diese Filter.";
+    list.appendChild(empty);
+    return;
+  }
+
+  filtered.forEach((event) => {
     const item = document.createElement("li");
-    item.textContent = formatEventMessage(event);
+    item.className = "log-item";
+    item.dataset.flightId = event._flightId;
+
+    const card = document.createElement("article");
+    card.className = "log-card";
+
+    const header = document.createElement("div");
+    header.className = "log-card-header";
+
+    const metaGrid = document.createElement("div");
+    metaGrid.className = "log-meta-grid";
+
+    const timeValue = event.event_timestamp
+      ? new Date(event.event_timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : "-";
+    const directionValue =
+      event.direction === "arrival" ? "Arrival" : event.direction === "departure" ? "Departure" : "-";
+    const eventLabel = EVENT_TYPE_LABELS[event.event_type] || event.event_type || "-";
+    const processLabel = [event.process_code, event.process_label ? `(${event.process_label})` : ""]
+      .filter(Boolean)
+      .join(" ");
+
+    metaGrid.appendChild(createLogMetaItem("Zeit", timeValue));
+    metaGrid.appendChild(createLogMetaItem("Event-Typ", eventLabel, "is-event-type"));
+    metaGrid.appendChild(createLogMetaItem("Prozess", processLabel));
+    metaGrid.appendChild(createLogMetaItem("Flug", event.flight_no || "-"));
+    metaGrid.appendChild(createLogMetaItem("Richtung", directionValue));
+    metaGrid.appendChild(createLogMetaItem("Gate/Stand", `${event.gate || "-"} / ${event.stand || "-"}`));
+
+    header.appendChild(metaGrid);
+    card.appendChild(header);
+
+    const details = document.createElement("details");
+    details.className = "log-details";
+    const summary = document.createElement("summary");
+    summary.textContent = "Zusätzliche Details";
+    details.appendChild(summary);
+
+    const detailGrid = document.createElement("div");
+    detailGrid.className = "log-detail-grid";
+    detailGrid.appendChild(createLogDetailItem("Disruption", getDropdownLabel("disruption_type", event.disruption_type)));
+    detailGrid.appendChild(createLogDetailItem("Equipment", getDropdownLabel("equipment_type", event.equipment_type)));
+    detailGrid.appendChild(createLogDetailItem("Pax", getDropdownLabel("pax_mix", event.pax_mix)));
+    detailGrid.appendChild(createLogDetailItem("Notizen", event.notes || "-"));
+    details.appendChild(detailGrid);
+
+    card.appendChild(details);
+    item.appendChild(card);
     list.appendChild(item);
   });
 }
