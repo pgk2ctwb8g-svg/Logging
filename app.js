@@ -195,13 +195,19 @@ function normalizeFlight(flight) {
   };
 }
 
+function sanitizeIdPart(value) {
+  return String(value || "UNK")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_");
+}
+
 function buildFlightId(flight, flightDate) {
-  const parts = [flight.airport, flight.flight_no, flightDate, flight.direction].map((part) =>
-    String(part || "UNK")
-      .trim()
-      .toUpperCase()
+  const datePart = sanitizeIdPart(flightDate).replace(/-/g, "_");
+  const parts = [flight.airport, flight.flight_no, datePart, flight.direction].map((part) =>
+    sanitizeIdPart(part)
   );
-  return parts.join("-");
+  return parts.join("_");
 }
 
 function buildFlightContext({ flight, flightDate, existingContext = {} }) {
@@ -1071,7 +1077,7 @@ function buildEvent(eventPayload, eventTimestamp) {
   const disruptionFlag = eventPayload.disruption_flag ?? (eventPayload.disruption_type && eventPayload.disruption_type !== "none");
   const airportCode = (eventPayload.airport ?? activeFlight.airport ?? "").toUpperCase();
   const event = {
-    log_id: `${new Date(eventTimestamp).getTime()}-${context.events.length + 1}`,
+    log_id: `${new Date(eventTimestamp).getTime()}_${context.events.length + 1}`,
     flight_no: eventPayload.flight_no ?? activeFlight.flight_no ?? "",
     direction: eventPayload.direction ?? activeFlight.direction ?? "",
     airport: airportCode,
@@ -1109,7 +1115,7 @@ function buildEvent(eventPayload, eventTimestamp) {
 
   const turnaroundId = context.turnaroundId || buildFlightId(activeFlight, context.flightDate || getDefaultFlightDate());
   event.turnaround_id = turnaroundId;
-  event.instance_id = `${turnaroundId}-${event.process_code}-${context.events.length + 1}`;
+  event.instance_id = `${turnaroundId}_${sanitizeIdPart(event.process_code)}_${context.events.length + 1}`;
   event.instance_fingerprint = buildInstanceFingerprint({
     turnaroundId,
     processCode: event.process_code,
