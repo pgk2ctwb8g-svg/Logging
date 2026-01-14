@@ -2806,16 +2806,49 @@ function renderProcessVisualization() {
 
   const createFlightGroup = ({ context, flightId, rowClassName }) => {
     const group = document.createElement("div");
-    group.className = `process-viz-group${flightId === state.activeFlightId ? " is-active" : ""}`;
+    const isActive = flightId === state.activeFlightId;
+    group.className = `process-viz-group${isActive ? " is-active" : " is-clickable"}`;
+    if (!isActive) {
+      group.setAttribute("role", "button");
+      group.tabIndex = 0;
+    }
+
+    const titleRow = document.createElement("div");
+    titleRow.className = "process-viz-group-header";
 
     const title = document.createElement("div");
     title.className = "process-viz-group-title";
     title.textContent = formatFlightLabel(context);
 
+    titleRow.appendChild(title);
+
+    if (!isActive) {
+      const activateButton = document.createElement("button");
+      activateButton.type = "button";
+      activateButton.className = "process-viz-activate";
+      activateButton.innerHTML = `<span class="process-viz-activate-icon">➜</span>Aktivieren`;
+      activateButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        setActiveFlightId(flightId);
+      });
+      titleRow.appendChild(activateButton);
+    }
+
     const row = document.createElement("div");
     row.className = rowClassName;
 
-    group.appendChild(title);
+    if (!isActive) {
+      const handleActivate = () => setActiveFlightId(flightId);
+      group.addEventListener("click", handleActivate);
+      group.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          handleActivate();
+        }
+      });
+    }
+
+    group.appendChild(titleRow);
     group.appendChild(row);
 
     return { group, row };
