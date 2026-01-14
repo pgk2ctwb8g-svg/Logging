@@ -2528,7 +2528,7 @@ function renderSessionControls(container) {
   exportButton.id = "export-button";
   exportButton.className = "btn-export";
   exportButton.textContent = "CSV Export";
-  exportButton.disabled = !activeContext?.events?.length;
+  exportButton.disabled = !(getExportEntries().length > 0);
   exportButton.addEventListener("click", handleExport);
 
   const resetButton = document.createElement("button");
@@ -3544,7 +3544,7 @@ function updateSessionSummary() {
 
   const exportButton = document.getElementById("export-button");
   if (exportButton) {
-    exportButton.disabled = !(activeContext?.events?.length > 0);
+    exportButton.disabled = !(getExportEntries().length > 0);
   }
 }
 
@@ -3583,6 +3583,28 @@ function handleAction(process, action) {
     const flightLabel = getActiveFlight().flight_no || "aktuellen Flug";
     setFeedback(`Sub-Task gespeichert (zusätzliche Instanz für ${process.code} im ${flightLabel}).`);
   }
+}
+
+function getExportEntries() {
+  return Object.entries(state.flightContexts || {}).flatMap(([, context]) => {
+    const events = Array.isArray(context?.events) ? context.events : [];
+    const flight = context?.flight || DEFAULT_FLIGHT;
+
+    return events
+      .filter((event) => Boolean(event.end_time_abs))
+      .map((event) => ({
+        ...event,
+        flight_no: flight.flight_no || event.flight_no || "",
+        direction: flight.direction || event.direction || "",
+        airport: flight.airport || event.airport || "",
+        from_airport: flight.from_airport || event.from_airport || "",
+        to_airport: flight.to_airport || event.to_airport || "",
+        airline_code: flight.airline_code || event.airline_code || "",
+        aircraft_type: flight.aircraft_type || event.aircraft_type || "",
+        stand: flight.stand || event.stand || "",
+        gate: flight.gate || event.gate || "",
+      }));
+  });
 }
 
 function toCsv() {
@@ -3624,8 +3646,7 @@ function toCsv() {
     return stringValue;
   };
 
-  const activeContext = getActiveFlightContext();
-  const rows = (activeContext?.events || []).map((event) => header.map((key) => escapeValue(event[key])));
+  const rows = getExportEntries().map((event) => header.map((key) => escapeValue(event[key])));
   return [header.join(","), ...rows.map((row) => row.join(","))].join("\n");
 }
 
@@ -3659,8 +3680,10 @@ function resetSession() {
 }
 
 function handleExport() {
-  const activeContext = getActiveFlightContext();
-  if (!activeContext?.events?.length) return;
+  if (!getExportEntries().length) {
+    setFeedback("Keine abgeschlossenen Instanzen für den Export.");
+    return;
+  }
   const filename = downloadCsv();
   setFeedback(`CSV exportiert: ${filename}`);
   const shouldReset = window.confirm("Session löschen?");
