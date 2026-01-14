@@ -275,16 +275,24 @@ function updateActiveFlightContext(flightUpdates, options = {}) {
   });
   const nextId = updatedContext.flightId;
   const updatedContexts = { ...state.flightContexts };
-  delete updatedContexts[activeId];
+  const hasActivity =
+    (context.events?.length || 0) > 0 ||
+    Object.keys(context.activeProcesses || {}).length > 0 ||
+    (context.completedProcesses?.length || 0) > 0;
+  const shouldPreserveContext = nextId !== activeId && hasActivity;
+  const baseContext = shouldPreserveContext
+    ? buildFlightContext({ flight: updatedFlight, flightDate: context.flightDate })
+    : updatedContext;
+  if (!shouldPreserveContext) delete updatedContexts[activeId];
   const existingTarget = nextId !== activeId ? state.flightContexts[nextId] : null;
   updatedContexts[nextId] = existingTarget
     ? {
-        ...updatedContext,
-        activeProcesses: { ...existingTarget.activeProcesses, ...updatedContext.activeProcesses },
-        completedProcesses: [...updatedContext.completedProcesses, ...existingTarget.completedProcesses],
-        events: [...updatedContext.events, ...existingTarget.events],
+        ...baseContext,
+        activeProcesses: { ...existingTarget.activeProcesses, ...baseContext.activeProcesses },
+        completedProcesses: [...baseContext.completedProcesses, ...existingTarget.completedProcesses],
+        events: [...baseContext.events, ...existingTarget.events],
       }
-    : updatedContext;
+    : baseContext;
 
   const updatedPinned = state.pinnedFlights.map((id) => (id === activeId ? nextId : id));
   state = {
