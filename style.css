@@ -510,6 +510,12 @@ textarea {
   gap: 0.35rem;
 }
 
+.compact-flight-card.is-active {
+  border-color: var(--accent);
+  background: linear-gradient(135deg, #e0f2fe 0%, #ffffff 70%);
+  box-shadow: 0 12px 26px rgba(14, 165, 233, 0.18);
+}
+
 .compact-flight-header {
   display: flex;
   justify-content: space-between;
@@ -550,6 +556,17 @@ textarea {
   letter-spacing: 0.02em;
 }
 
+.flight-active-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 800;
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
 .flight-route {
   font-weight: 700;
   color: var(--text);
@@ -569,6 +586,8 @@ textarea {
 .compact-flight-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 0.4rem;
+  flex-wrap: wrap;
 }
 
 .btn-small {

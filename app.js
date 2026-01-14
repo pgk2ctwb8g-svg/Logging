@@ -78,6 +78,7 @@ const DEFAULT_STATE = {
   flightSuggestionError: "",
   flightSuggestionSource: "unknown",
   flightSuggestionAnalysis: "",
+  flightSuggestionQuery: "",
   flightSuggestionStats: {
     count: 0,
     topAirline: "",
@@ -1796,20 +1797,61 @@ function renderFlightDetails(container) {
   container.appendChild(panel);
 }
 
+function getFlightSuggestionTimeMs(flight) {
+  const rawTime =
+    flight?.scheduled_time_local ||
+    flight?.scheduledTimeLocal ||
+    flight?.scheduled_time_utc ||
+    flight?.scheduledTimeUtc ||
+    "";
+  if (!rawTime) return null;
+  const parsed = Date.parse(rawTime);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function getPreparedFlightSuggestions() {
+  const query = (state.flightSuggestionQuery || "").trim().toLowerCase();
+  const filterFields = ["flight_no", "gate", "stand", "from_airport", "to_airport"];
+  const pinnedIds = new Set(state.pinnedFlights);
+  const now = Date.now();
+
+  return (state.flightSuggestions || [])
+    .filter((flight) => {
+      if (!query) return true;
+      return filterFields.some((field) => String(flight?.[field] || "").toLowerCase().includes(query));
+    })
+    .sort((left, right) => {
+      const leftContext = buildFlightContext({ flight: left, flightDate: getDefaultFlightDate() });
+      const rightContext = buildFlightContext({ flight: right, flightDate: getDefaultFlightDate() });
+      const leftPinned = pinnedIds.has(leftContext.flightId);
+      const rightPinned = pinnedIds.has(rightContext.flightId);
+      if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
+
+      const leftTime = getFlightSuggestionTimeMs(left);
+      const rightTime = getFlightSuggestionTimeMs(right);
+      const leftDiff = leftTime ? Math.abs(leftTime - now) : Number.POSITIVE_INFINITY;
+      const rightDiff = rightTime ? Math.abs(rightTime - now) : Number.POSITIVE_INFINITY;
+      if (leftDiff !== rightDiff) return leftDiff - rightDiff;
+
+      return String(left.flight_no || "").localeCompare(String(right.flight_no || ""), "de", { numeric: true });
+    });
+}
+
 function createFlightSuggestionGrid({ compact = false } = {}) {
+  const flights = getPreparedFlightSuggestions().slice(0, MAX_FLIGHT_SUGGESTIONS);
   const list = document.createElement("div");
   list.id = "flight-suggestion-list";
   list.className = compact ? "compact-flight-grid" : "process-list";
 
-  if (!state.flightSuggestions.length) {
+  if (!state.flightSuggestions.length || !flights.length) {
     const empty = document.createElement("p");
     empty.className = "muted";
-    empty.textContent = "Noch keine Vorschläge geladen.";
+    empty.textContent = state.flightSuggestions.length ? "Keine Treffer für den Filter." : "Noch keine Vorschläge geladen.";
     list.appendChild(empty);
     return list;
   }
 
-  state.flightSuggestions.slice(0, MAX_FLIGHT_SUGGESTIONS).forEach((flight) => {
+  flights.forEach((flight) => {
     const card = document.createElement("div");
     card.className = compact ? "compact-flight-card" : "process-card";
 
@@ -1859,16 +1901,29 @@ function createFlightSuggestionGrid({ compact = false } = {}) {
     pinButton.type = "button";
     const previewContext = buildFlightContext({ flight, flightDate: getDefaultFlightDate() });
     const isPinned = state.pinnedFlights.includes(previewContext.flightId);
-    pinButton.textContent = isPinned ? "Gepinnt" : "+ Flug pinnen";
-    pinButton.disabled = isPinned;
+    const isActive = previewContext.flightId === state.activeFlightId;
+    if (isActive) {
+      card.classList.add("is-active");
+      const activeBadge = document.createElement("span");
+      activeBadge.className = "flight-active-badge";
+      activeBadge.textContent = "Aktiv";
+      heading.appendChild(activeBadge);
+    }
+    pinButton.textContent = isPinned ? (isActive ? "Aktiv" : "Set active") : "Pin & set active";
+    pinButton.disabled = isActive;
     pinButton.addEventListener("click", () => {
-      pinFlightContext(flight);
+      if (isPinned) {
+        setActiveFlightId(previewContext.flightId);
+      } else {
+        pinFlightContext(flight);
+      }
     });
     actionRow.appendChild(pinButton);
     const applyButton = document.createElement("button");
     applyButton.className = "btn-start btn-small";
     applyButton.type = "button";
-    applyButton.textContent = "Flug auswählen";
+    applyButton.textContent = isActive ? "Aktiv" : "Flug auswählen";
+    applyButton.disabled = isActive;
     applyButton.addEventListener("click", () => {
       applyFlightSelection(flight);
     });
@@ -1960,6 +2015,32 @@ function renderFlightSuggestions(container) {
   status.textContent = statusLabel;
   panel.appendChild(status);
 
+  const filterRow = document.createElement("div");
+  filterRow.className = "field-grid flight-filter-grid";
+  filterRow.appendChild(
+    createInputField({
+      id: "flight-suggestion-filter",
+      label: "Vorschläge filtern",
+      value: state.flightSuggestionQuery,
+      placeholder: "Flight-No, Gate, Stand, From, To",
+    })
+  );
+  const filterInput = filterRow.querySelector("#flight-suggestion-filter");
+  if (filterInput) {
+    filterInput.addEventListener("input", (event) => {
+      state = { ...state, flightSuggestionQuery: event.target.value };
+      persistStateDebounced();
+      const list = panel.querySelector("#flight-suggestion-list");
+      const nextList = createFlightSuggestionGrid({ compact: true });
+      if (list) {
+        list.replaceWith(nextList);
+      } else {
+        panel.appendChild(nextList);
+      }
+    });
+  }
+  panel.appendChild(filterRow);
+
   const analysisNote = document.createElement("div");
   analysisNote.className = "card-hint";
   analysisNote.textContent = state.flightSuggestionAnalysis || "Noch nichts geladen.";
@@ -2013,6 +2094,10 @@ function buildSampleFlights(airport) {
     const target = new Date(now.getTime() + offsetMinutes * 60000);
     return target.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
+  const makeTimeIso = (offsetMinutes) => {
+    const target = new Date(now.getTime() + offsetMinutes * 60000);
+    return target.toISOString();
+  };
 
   const samples = [
     {
@@ -2026,6 +2111,7 @@ function buildSampleFlights(airport) {
       from_airport: airport,
       to_airport: "JFK",
       airport,
+      scheduled_time_local: makeTimeIso(10),
       description: `Abflug gegen ${makeTimeLabel(10)} ab ${airport}.`,
     },
     {
@@ -2039,6 +2125,7 @@ function buildSampleFlights(airport) {
       from_airport: "PMI",
       to_airport: airport,
       airport,
+      scheduled_time_local: makeTimeIso(-8),
       description: `Ankunft gegen ${makeTimeLabel(-8)} an ${airport}.`,
     },
     {
@@ -2052,6 +2139,7 @@ function buildSampleFlights(airport) {
       from_airport: airport,
       to_airport: "LHR",
       airport,
+      scheduled_time_local: makeTimeIso(2),
       description: `Abflug ${makeTimeLabel(2)} ab ${airport}.`,
     },
     {
@@ -2065,6 +2153,7 @@ function buildSampleFlights(airport) {
       from_airport: "DUB",
       to_airport: airport,
       airport,
+      scheduled_time_local: makeTimeIso(-12),
       description: `Ankunft ${makeTimeLabel(-12)} an ${airport}.`,
     },
     {
@@ -2078,6 +2167,7 @@ function buildSampleFlights(airport) {
       from_airport: airport,
       to_airport: "EWR",
       airport,
+      scheduled_time_local: makeTimeIso(14),
       description: `Langstrecke ${makeTimeLabel(14)} ab ${airport}.`,
     },
     {
@@ -2091,6 +2181,7 @@ function buildSampleFlights(airport) {
       from_airport: airport,
       to_airport: "LHR",
       airport,
+      scheduled_time_local: makeTimeIso(18),
       description: `Abflug nach London um ${makeTimeLabel(18)}.`,
     },
     {
@@ -2104,6 +2195,7 @@ function buildSampleFlights(airport) {
       from_airport: "AMS",
       to_airport: airport,
       airport,
+      scheduled_time_local: makeTimeIso(-4),
       description: `Anflug aus Amsterdam ${makeTimeLabel(-4)}.`,
     },
     {
@@ -2117,6 +2209,7 @@ function buildSampleFlights(airport) {
       from_airport: airport,
       to_airport: "CDG",
       airport,
+      scheduled_time_local: makeTimeIso(6),
       description: `Abflug nach Paris ${makeTimeLabel(6)}.`,
     },
     {
@@ -2130,6 +2223,7 @@ function buildSampleFlights(airport) {
       from_airport: "ZRH",
       to_airport: airport,
       airport,
+      scheduled_time_local: makeTimeIso(-18),
       description: `Ankunft aus Zürich ${makeTimeLabel(-18)}.`,
     },
     {
@@ -2143,6 +2237,7 @@ function buildSampleFlights(airport) {
       from_airport: airport,
       to_airport: "OSL",
       airport,
+      scheduled_time_local: makeTimeIso(20),
       description: `Abflug nach Oslo ${makeTimeLabel(20)}.`,
     },
   ];
@@ -2265,6 +2360,7 @@ function mapRapidApiFlight(entry, direction, airport) {
     airport,
     from_airport: direction === "arrival" ? counterpartAirport : airport,
     to_airport: direction === "departure" ? counterpartAirport : airport,
+    scheduled_time_local: scheduledLocal,
     description:
       direction === "arrival"
         ? `Anflug ${baseAirport} aus ${otherAirport || "Unbekannt"}${timeLabel}.`
