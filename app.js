@@ -38,22 +38,26 @@ function buildAerodataboxRapidUrl(airportCode) {
   return `${AERODATABOX_RAPID_BASE_URL}/flights/airports/iata/${airport}?${params.toString()}`;
 }
 
+const DEFAULT_FLIGHT = {
+  flight_no: "",
+  direction: "",
+  stand: "",
+  gate: "",
+  airport: "MUC",
+  from_airport: "",
+  to_airport: "",
+  airline_code: "",
+  aircraft_type: "",
+};
+
 const DEFAULT_STATE = {
   started: false,
   flightPickerOpen: false,
   flightDetailsEditable: false,
   lastAppliedFlight: null,
-  currentFlight: {
-    flight_no: "",
-    direction: "",
-    stand: "",
-    gate: "",
-    airport: "MUC",
-    from_airport: "",
-    to_airport: "",
-    airline_code: "",
-    aircraft_type: "",
-  },
+  flightContexts: {},
+  pinnedFlights: [],
+  activeFlightId: "",
   precheckCompleted: false,
   observer_id: "",
   location: {
@@ -81,9 +85,6 @@ const DEFAULT_STATE = {
     apiKey: "",
   },
   autoFetchedAfterStart: false,
-  activeProcesses: {},
-  completedProcesses: [],
-  events: [],
 };
 
 const DROPDOWN_OPTIONS = {
@@ -141,6 +142,184 @@ let state = { ...DEFAULT_STATE };
 let locationRequestInFlight = false;
 let locationRetryTimeoutId = null;
 let scheduledPersistId = null;
+
+function getDefaultFlightDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function normalizeFlight(flight) {
+  const merged = { ...DEFAULT_FLIGHT, ...(flight || {}) };
+  return {
+    ...merged,
+    airport: (merged.airport || "").toUpperCase(),
+    from_airport: (merged.from_airport || "").toUpperCase(),
+    to_airport: (merged.to_airport || "").toUpperCase(),
+    airline_code: (merged.airline_code || "").toUpperCase(),
+    aircraft_type: (merged.aircraft_type || "").toUpperCase(),
+  };
+}
+
+function buildFlightId(flight, flightDate) {
+  const parts = [flight.airport, flight.flight_no, flightDate, flight.direction].map((part) =>
+    String(part || "UNK")
+      .trim()
+      .toUpperCase()
+  );
+  return parts.join("-");
+}
+
+function buildFlightContext({ flight, flightDate, existingContext = {} }) {
+  const normalizedFlight = normalizeFlight(flight);
+  const resolvedDate = flightDate || existingContext.flightDate || getDefaultFlightDate();
+  const flightId = buildFlightId(normalizedFlight, resolvedDate);
+  return {
+    flight: normalizedFlight,
+    flightDate: resolvedDate,
+    flightId,
+    turnaroundId: flightId,
+    activeProcesses: existingContext.activeProcesses || {},
+    completedProcesses: existingContext.completedProcesses || [],
+    events: existingContext.events || [],
+  };
+}
+
+function normalizeActiveProcesses(activeProcesses) {
+  return Object.fromEntries(
+    Object.entries(activeProcesses || {}).map(([code, value]) => {
+      const label = PROCESS_CODES.find((entry) => entry.code === code)?.label || code;
+      if (value && typeof value === "object") return [code, { label, ...value }];
+      return [code, { startedAt: value, label }];
+    })
+  );
+}
+
+function normalizeCompletedProcesses(completedProcesses) {
+  return Array.isArray(completedProcesses)
+    ? completedProcesses.map((entry) => ({
+        ...entry,
+        label: entry.label || PROCESS_CODES.find((item) => item.code === entry.code)?.label || entry.code,
+      }))
+    : [];
+}
+
+function deriveFlightDateFromEvents(events) {
+  const entry = Array.isArray(events) && events.length ? events[0] : null;
+  const timestamp = entry?.start_time_abs || entry?.event_timestamp || "";
+  return timestamp ? String(timestamp).slice(0, 10) : getDefaultFlightDate();
+}
+
+function getActiveFlightContext() {
+  return state.flightContexts?.[state.activeFlightId];
+}
+
+function getActiveFlight() {
+  return getActiveFlightContext()?.flight || DEFAULT_FLIGHT;
+}
+
+function ensureActiveFlightContext() {
+  const active = getActiveFlightContext();
+  if (active) return { id: state.activeFlightId, context: active };
+  const freshContext = buildFlightContext({ flight: DEFAULT_FLIGHT });
+  state = {
+    ...state,
+    flightContexts: { ...state.flightContexts, [freshContext.flightId]: freshContext },
+    activeFlightId: freshContext.flightId,
+  };
+  return { id: freshContext.flightId, context: freshContext };
+}
+
+function updateActiveFlightContext(flightUpdates, options = {}) {
+  const { trackSuggestion, persistNow, deferPersist } = options;
+  const { id: activeId, context } = ensureActiveFlightContext();
+  const updatedFlight = normalizeFlight({ ...context.flight, ...flightUpdates });
+  const updatedContext = buildFlightContext({
+    flight: updatedFlight,
+    flightDate: context.flightDate,
+    existingContext: context,
+  });
+  const nextId = updatedContext.flightId;
+  const updatedContexts = { ...state.flightContexts };
+  delete updatedContexts[activeId];
+  const existingTarget = nextId !== activeId ? state.flightContexts[nextId] : null;
+  updatedContexts[nextId] = existingTarget
+    ? {
+        ...updatedContext,
+        activeProcesses: { ...existingTarget.activeProcesses, ...updatedContext.activeProcesses },
+        completedProcesses: [...updatedContext.completedProcesses, ...existingTarget.completedProcesses],
+        events: [...updatedContext.events, ...existingTarget.events],
+      }
+    : updatedContext;
+
+  const updatedPinned = state.pinnedFlights.map((id) => (id === activeId ? nextId : id));
+  state = {
+    ...state,
+    flightContexts: updatedContexts,
+    activeFlightId: nextId,
+    ...(trackSuggestion ? { lastAirportSuggestion: updatedFlight.airport || "" } : {}),
+  };
+
+  if (updatedFlight.airport && flightUpdates.airport !== undefined) {
+    state = {
+      ...state,
+      flightApiConfig: { ...state.flightApiConfig, url: buildAerodataboxRapidUrl(updatedFlight.airport) },
+    };
+  }
+
+  state = {
+    ...state,
+    pinnedFlights: updatedPinned,
+  };
+
+  if (persistNow) {
+    cancelScheduledPersist();
+    persistState();
+  } else if (deferPersist) {
+    scheduleStatePersist();
+  } else {
+    persistStateDebounced();
+  }
+  syncFlightInputs();
+  const continueButton = document.getElementById("precheck-continue-button");
+  if (continueButton) continueButton.disabled = !updatedFlight.airport || !updatedFlight.flight_no;
+  if (updatedFlight.airport) {
+    const airportError = document.getElementById("precheck-airport-error");
+    const airportInput = document.getElementById("precheck-airport");
+    if (airportError) airportError.style.display = "none";
+    if (airportInput) airportInput.classList.remove("has-error");
+  }
+}
+
+function setActiveFlightId(flightId) {
+  if (!flightId || !state.flightContexts?.[flightId]) return;
+  state = { ...state, activeFlightId: flightId };
+  persistState();
+  renderApp();
+}
+
+function pinFlightContext(flight) {
+  const flightDate = getDefaultFlightDate();
+  const context = buildFlightContext({ flight, flightDate });
+  const exists = state.flightContexts[context.flightId];
+  const nextApiConfig = context.flight.airport
+    ? { ...state.flightApiConfig, url: buildAerodataboxRapidUrl(context.flight.airport) }
+    : state.flightApiConfig;
+  const nextContexts = {
+    ...state.flightContexts,
+    [context.flightId]: exists ? { ...exists, flight: context.flight } : context,
+  };
+  const pinned = state.pinnedFlights.includes(context.flightId)
+    ? state.pinnedFlights
+    : [...state.pinnedFlights, context.flightId];
+  state = {
+    ...state,
+    flightContexts: nextContexts,
+    pinnedFlights: pinned,
+    activeFlightId: context.flightId,
+    flightApiConfig: nextApiConfig,
+  };
+  persistState();
+  renderApp();
+}
 
 function scheduleStatePersist(delay = 250) {
   clearTimeout(scheduledPersistId);
@@ -206,20 +385,49 @@ function loadState() {
     if (stored) {
       const parsed = JSON.parse(stored);
       if (parsed && typeof parsed === "object") {
-        const normalizedActive = Object.fromEntries(
-          Object.entries(parsed.activeProcesses || {}).map(([code, value]) => {
-            const label = PROCESS_CODES.find((entry) => entry.code === code)?.label || code;
-            if (value && typeof value === "object") return [code, { label, ...value }];
-            return [code, { startedAt: value, label }];
-          })
-        );
-        const normalizedCompleted = Array.isArray(parsed.completedProcesses)
-          ? parsed.completedProcesses.map((entry) => ({
-              ...entry,
-              label: entry.label || PROCESS_CODES.find((item) => item.code === entry.code)?.label || entry.code,
-            }))
-          : [];
         const suggestionList = Array.isArray(parsed.flightSuggestions) ? parsed.flightSuggestions : [];
+        const hasContexts = parsed.flightContexts && typeof parsed.flightContexts === "object";
+        const normalizedContexts = hasContexts
+          ? Object.fromEntries(
+              Object.entries(parsed.flightContexts).map(([key, context]) => {
+                const normalizedContext = buildFlightContext({
+                  flight: context?.flight || DEFAULT_FLIGHT,
+                  flightDate: context?.flightDate || deriveFlightDateFromEvents(context?.events),
+                  existingContext: {
+                    activeProcesses: normalizeActiveProcesses(context?.activeProcesses),
+                    completedProcesses: normalizeCompletedProcesses(context?.completedProcesses),
+                    events: Array.isArray(context?.events) ? context.events : [],
+                  },
+                });
+                return [key || normalizedContext.flightId, normalizedContext];
+              })
+            )
+          : {};
+
+        const legacyFlight = normalizeFlight(parsed.currentFlight || DEFAULT_FLIGHT);
+        const legacyEvents = Array.isArray(parsed.events) ? parsed.events : [];
+        const legacyContext = buildFlightContext({
+          flight: legacyFlight,
+          flightDate: deriveFlightDateFromEvents(legacyEvents),
+          existingContext: {
+            activeProcesses: normalizeActiveProcesses(parsed.activeProcesses),
+            completedProcesses: normalizeCompletedProcesses(parsed.completedProcesses),
+            events: legacyEvents,
+          },
+        });
+
+        const mergedContexts = hasContexts ? normalizedContexts : { [legacyContext.flightId]: legacyContext };
+        const normalizedPinned = Array.isArray(parsed.pinnedFlights)
+          ? parsed.pinnedFlights.filter((id) => mergedContexts[id])
+          : legacyFlight.flight_no || legacyEvents.length
+            ? [legacyContext.flightId]
+            : [];
+        const activeId =
+          (parsed.activeFlightId && mergedContexts[parsed.activeFlightId] && parsed.activeFlightId) ||
+          normalizedPinned[0] ||
+          Object.keys(mergedContexts)[0] ||
+          "";
+
         return {
           ...DEFAULT_STATE,
           ...parsed,
@@ -227,10 +435,9 @@ function loadState() {
           flightPickerOpen: parsed.flightPickerOpen ?? DEFAULT_STATE.flightPickerOpen,
           flightDetailsEditable: parsed.flightDetailsEditable ?? DEFAULT_STATE.flightDetailsEditable,
           lastAppliedFlight: parsed.lastAppliedFlight ?? DEFAULT_STATE.lastAppliedFlight,
-          currentFlight: { ...DEFAULT_STATE.currentFlight, ...(parsed.currentFlight || {}) },
-          activeProcesses: normalizedActive,
-          events: Array.isArray(parsed.events) ? parsed.events : [],
-          completedProcesses: normalizedCompleted,
+          flightContexts: mergedContexts,
+          pinnedFlights: normalizedPinned,
+          activeFlightId: activeId,
           lastLocationSuccessAt: parsed.lastLocationSuccessAt || "",
           locationStatus: parsed.locationStatus || "",
           lastAirportSuggestion: parsed.lastAirportSuggestion || "",
@@ -313,40 +520,10 @@ function updateRetryButtons({ visible, disabled, label }) {
 }
 
 function setCurrentFlight(field, value, options = {}) {
-  if (!(field in state.currentFlight)) return;
-  const { trackSuggestion, persistNow, deferPersist } = options;
+  const { context } = ensureActiveFlightContext();
+  if (!(field in context.flight)) return;
   const normalizedValue = field === "airport" && typeof value === "string" ? value.toUpperCase() : value;
-  const updatedState = {
-    ...state,
-    currentFlight: { ...state.currentFlight, [field]: normalizedValue },
-    ...(trackSuggestion ? { lastAirportSuggestion: normalizedValue || "" } : {}),
-  };
-
-  if (field === "airport") {
-    updatedState.flightApiConfig = {
-      ...state.flightApiConfig,
-      url: buildAerodataboxRapidUrl(normalizedValue),
-    };
-  }
-
-  state = updatedState;
-  if (persistNow) {
-    cancelScheduledPersist();
-    persistState();
-  } else if (deferPersist) {
-    scheduleStatePersist();
-  } else {
-    persistStateDebounced();
-  }
-  syncFlightInputs();
-  const continueButton = document.getElementById("precheck-continue-button");
-  if (continueButton) continueButton.disabled = !state.currentFlight.airport || !state.currentFlight.flight_no;
-  if (state.currentFlight.airport) {
-    const airportError = document.getElementById("precheck-airport-error");
-    const airportInput = document.getElementById("precheck-airport");
-    if (airportError) airportError.style.display = "none";
-    if (airportInput) airportInput.classList.remove("has-error");
-  }
+  updateActiveFlightContext({ [field]: normalizedValue }, options);
 }
 
 function setObserver(value) {
@@ -398,7 +575,8 @@ function applyStartMode(isStartMode) {
 }
 
 function promptForAirport() {
-  const airport = window.prompt("Bitte IATA-Code des Flughafens eingeben (z.B. MUC):", state.currentFlight.airport || "");
+  const activeFlight = getActiveFlight();
+  const airport = window.prompt("Bitte IATA-Code des Flughafens eingeben (z.B. MUC):", activeFlight.airport || "");
   if (airport != null && airport.trim()) {
     setCurrentFlight("airport", airport.trim().toUpperCase());
     const providedKey = window.prompt(
@@ -445,7 +623,8 @@ function resetLocation() {
 }
 
 function ensureAirportFallback() {
-  if (!state.currentFlight.airport) {
+  const activeFlight = getActiveFlight();
+  if (!activeFlight.airport) {
     setCurrentFlight("airport", "MUC");
   }
 }
@@ -705,11 +884,18 @@ function highlightMissingFields(missingFields) {
 
 function setActiveProcess(processCode, startedAt) {
   const processMeta = PROCESS_CODES.find((entry) => entry.code === processCode);
+  const { id: activeId, context } = ensureActiveFlightContext();
   state = {
     ...state,
-    activeProcesses: {
-      ...state.activeProcesses,
-      [processCode]: { startedAt: startedAt ?? new Date().toISOString(), label: processMeta?.label ?? processCode },
+    flightContexts: {
+      ...state.flightContexts,
+      [activeId]: {
+        ...context,
+        activeProcesses: {
+          ...context.activeProcesses,
+          [processCode]: { startedAt: startedAt ?? new Date().toISOString(), label: processMeta?.label ?? processCode },
+        },
+      },
     },
   };
   persistState();
@@ -719,7 +905,8 @@ function setActiveProcess(processCode, startedAt) {
 }
 
 function clearActiveProcess(processCode, endTime) {
-  const active = state.activeProcesses?.[processCode];
+  const { id: activeId, context } = ensureActiveFlightContext();
+  const active = context.activeProcesses?.[processCode];
   if (!active) return false;
   const resolvedEndTime = endTime || new Date().toISOString();
   const startedAt = active.startedAt || active;
@@ -740,11 +927,17 @@ function clearActiveProcess(processCode, endTime) {
     completedAt: Date.now(),
   };
 
-  const { [processCode]: _removed, ...rest } = state.activeProcesses;
+  const { [processCode]: _removed, ...rest } = context.activeProcesses;
   state = {
     ...state,
-    activeProcesses: rest,
-    completedProcesses: [completedEntry, ...state.completedProcesses].slice(0, 30),
+    flightContexts: {
+      ...state.flightContexts,
+      [activeId]: {
+        ...context,
+        activeProcesses: rest,
+        completedProcesses: [completedEntry, ...context.completedProcesses].slice(0, 30),
+      },
+    },
   };
   persistState();
   const app = document.getElementById("app");
@@ -755,10 +948,11 @@ function clearActiveProcess(processCode, endTime) {
 
 function getMissingRequiredFields(eventPayload) {
   const missing = [];
+  const activeFlight = getActiveFlight();
 
-  const flightNo = eventPayload.flight_no ?? state.currentFlight.flight_no;
-  const direction = eventPayload.direction ?? state.currentFlight.direction;
-  const airport = eventPayload.airport ?? state.currentFlight.airport;
+  const flightNo = eventPayload.flight_no ?? activeFlight.flight_no;
+  const direction = eventPayload.direction ?? activeFlight.direction;
+  const airport = eventPayload.airport ?? activeFlight.airport;
 
   if (!eventPayload.process_code) missing.push("process_code");
   if (!eventPayload.event_type) missing.push("event_type");
@@ -787,7 +981,8 @@ function validateEventPayload(eventPayload) {
   }
 
   const isEnd = eventPayload.event_type === "end";
-  if (isEnd && !state.activeProcesses[eventPayload.process_code]) {
+  const activeContext = getActiveFlightContext();
+  if (isEnd && !activeContext?.activeProcesses?.[eventPayload.process_code]) {
     setFeedback("Kein aktiver Prozess für diesen Abschluss gefunden.");
     return { valid: false };
   }
@@ -798,7 +993,7 @@ function validateEventPayload(eventPayload) {
 function resolveEventTimes(eventPayload, eventTimestamp) {
   const isStart = eventPayload.event_type === "start";
   const isEnd = eventPayload.event_type === "end";
-  const active = state.activeProcesses[eventPayload.process_code];
+  const active = getActiveFlightContext()?.activeProcesses?.[eventPayload.process_code];
   const activeStart = active?.startedAt || active || "";
 
   const startTimeAbs = isStart ? activeStart || eventTimestamp : activeStart;
@@ -823,23 +1018,25 @@ function buildInstanceFingerprint({ turnaroundId, processCode, eventType, startT
 }
 
 function buildEvent(eventPayload, eventTimestamp) {
+  const { context } = ensureActiveFlightContext();
+  const activeFlight = context.flight;
   const { startTimeAbs, endTimeAbs } = resolveEventTimes(eventPayload, eventTimestamp);
   const durationMin = computeDurationMinutes(startTimeAbs, endTimeAbs);
   const timeSlot = computeTimeSlot(startTimeAbs);
 
   const disruptionFlag = eventPayload.disruption_flag ?? (eventPayload.disruption_type && eventPayload.disruption_type !== "none");
-  const airportCode = (eventPayload.airport ?? state.currentFlight.airport ?? "").toUpperCase();
+  const airportCode = (eventPayload.airport ?? activeFlight.airport ?? "").toUpperCase();
   const event = {
-    log_id: `${new Date(eventTimestamp).getTime()}-${state.events.length + 1}`,
-    flight_no: eventPayload.flight_no ?? state.currentFlight.flight_no ?? "",
-    direction: eventPayload.direction ?? state.currentFlight.direction ?? "",
+    log_id: `${new Date(eventTimestamp).getTime()}-${context.events.length + 1}`,
+    flight_no: eventPayload.flight_no ?? activeFlight.flight_no ?? "",
+    direction: eventPayload.direction ?? activeFlight.direction ?? "",
     airport: airportCode,
-    from_airport: eventPayload.from_airport ?? state.currentFlight.from_airport ?? "",
-    to_airport: eventPayload.to_airport ?? state.currentFlight.to_airport ?? "",
-    airline_code: eventPayload.airline_code ?? state.currentFlight.airline_code ?? "",
-    aircraft_type: eventPayload.aircraft_type ?? state.currentFlight.aircraft_type ?? "",
-    stand: eventPayload.stand ?? state.currentFlight.stand ?? "",
-    gate: eventPayload.gate ?? state.currentFlight.gate ?? "",
+    from_airport: eventPayload.from_airport ?? activeFlight.from_airport ?? "",
+    to_airport: eventPayload.to_airport ?? activeFlight.to_airport ?? "",
+    airline_code: eventPayload.airline_code ?? activeFlight.airline_code ?? "",
+    aircraft_type: eventPayload.aircraft_type ?? activeFlight.aircraft_type ?? "",
+    stand: eventPayload.stand ?? activeFlight.stand ?? "",
+    gate: eventPayload.gate ?? activeFlight.gate ?? "",
     process_id: eventPayload.process_code,
     process_code: eventPayload.process_code,
     process_label: eventPayload.process_label ?? "",
@@ -866,12 +1063,9 @@ function buildEvent(eventPayload, eventTimestamp) {
     quality_flag: airportCode ? "" : "missing_airport",
   };
 
-  const datePart = (startTimeAbs || eventTimestamp).slice(0, 10);
-  const turnaroundId = [event.airport || "UNK", event.flight_no || "UNK", datePart || "UNK", event.direction || "UNK"].join(
-    "-"
-  );
+  const turnaroundId = context.turnaroundId || buildFlightId(activeFlight, context.flightDate || getDefaultFlightDate());
   event.turnaround_id = turnaroundId;
-  event.instance_id = `${turnaroundId}-${event.process_code}-${state.events.length + 1}`;
+  event.instance_id = `${turnaroundId}-${event.process_code}-${context.events.length + 1}`;
   event.instance_fingerprint = buildInstanceFingerprint({
     turnaroundId,
     processCode: event.process_code,
@@ -884,7 +1078,8 @@ function buildEvent(eventPayload, eventTimestamp) {
 }
 
 function isDuplicateEvent(fingerprint) {
-  return state.events.some((existing) => existing.instance_fingerprint === fingerprint);
+  const activeContext = getActiveFlightContext();
+  return activeContext?.events?.some((existing) => existing.instance_fingerprint === fingerprint);
 }
 
 function addEvent(eventPayload) {
@@ -900,7 +1095,14 @@ function addEvent(eventPayload) {
     return false;
   }
 
-  state = { ...state, events: [...state.events, event] };
+  const { id: activeId, context } = ensureActiveFlightContext();
+  state = {
+    ...state,
+    flightContexts: {
+      ...state.flightContexts,
+      [activeId]: { ...context, events: [...context.events, event] },
+    },
+  };
   persistState();
   populateLog();
   updateSessionSummary();
@@ -952,6 +1154,7 @@ function createInputField({ id, label, type = "text", value = "", placeholder = 
 }
 
 function getMissingFlightFieldConfigs() {
+  const activeFlight = getActiveFlight();
   const fieldConfigs = [
     {
       key: "direction",
@@ -996,20 +1199,21 @@ function getMissingFlightFieldConfigs() {
     },
   ];
 
-  return fieldConfigs.filter((entry) => !state.currentFlight[entry.key]);
+  return fieldConfigs.filter((entry) => !activeFlight[entry.key]);
 }
 
 function syncFlightInputs() {
+  const activeFlight = getActiveFlight();
   const mapping = [
-    ["airport-code", state.currentFlight.airport],
-    ["precheck-airport", state.currentFlight.airport],
-    ["flight-no", state.currentFlight.flight_no],
-    ["flight-stand", state.currentFlight.stand],
-    ["flight-gate", state.currentFlight.gate],
-    ["from-airport", state.currentFlight.from_airport],
-    ["to-airport", state.currentFlight.to_airport],
-    ["airline-code", state.currentFlight.airline_code],
-    ["aircraft-type", state.currentFlight.aircraft_type],
+    ["airport-code", activeFlight.airport],
+    ["precheck-airport", activeFlight.airport],
+    ["flight-no", activeFlight.flight_no],
+    ["flight-stand", activeFlight.stand],
+    ["flight-gate", activeFlight.gate],
+    ["from-airport", activeFlight.from_airport],
+    ["to-airport", activeFlight.to_airport],
+    ["airline-code", activeFlight.airline_code],
+    ["aircraft-type", activeFlight.aircraft_type],
   ];
 
   mapping.forEach(([id, value]) => {
@@ -1029,8 +1233,9 @@ function setPrecheckFeedback(message) {
 }
 
 function renderPrecheckScreen(container) {
-  const compactStatus = state.currentFlight.flight_no
-    ? `${state.currentFlight.flight_no} · ${state.currentFlight.from_airport || "-"} → ${state.currentFlight.to_airport || "-"}`
+  const activeFlight = getActiveFlight();
+  const compactStatus = activeFlight.flight_no
+    ? `${activeFlight.flight_no} · ${activeFlight.from_airport || "-"} → ${activeFlight.to_airport || "-"}`
     : "Noch kein Flug gewählt.";
 
   const panel = document.createElement("div");
@@ -1059,7 +1264,7 @@ function renderPrecheckScreen(container) {
     createInputField({
       id: "precheck-airport",
       label: "Airport (IATA, Pflicht)",
-      value: state.currentFlight.airport,
+      value: activeFlight.airport,
       placeholder: "z.B. MUC",
     })
   );
@@ -1088,9 +1293,9 @@ function renderPrecheckScreen(container) {
   fetchButton.type = "button";
   const isLoading = state.flightSuggestionStatus === "loading" || state.flightSuggestionStatus === "loading_auto";
   fetchButton.textContent = isLoading ? "Lade..." : "Flüge laden";
-  fetchButton.disabled = !state.currentFlight.airport || isLoading;
+  fetchButton.disabled = !activeFlight.airport || isLoading;
   fetchButton.addEventListener("click", () => {
-    if (!state.currentFlight.airport) {
+    if (!activeFlight.airport) {
       setPrecheckFeedback("Bitte IATA-Code eingeben.");
       return;
     }
@@ -1103,15 +1308,15 @@ function renderPrecheckScreen(container) {
   continueButton.className = "btn-start";
   continueButton.type = "button";
   continueButton.textContent = "Weiter zum Logging";
-  continueButton.disabled = !state.currentFlight.flight_no;
+  continueButton.disabled = !activeFlight.flight_no;
   continueButton.addEventListener("click", () => {
     const airportError = document.getElementById("precheck-airport-error");
-    if (!state.currentFlight.airport) {
+    if (!activeFlight.airport) {
       if (airportError) airportError.style.display = "block";
       setPrecheckFeedback("Airport fehlt – bitte IATA-Code setzen.");
       return;
     }
-    if (!state.currentFlight.flight_no) {
+    if (!activeFlight.flight_no) {
       setPrecheckFeedback("Bitte zuerst einen Flug aus der Liste auswählen.");
       return;
     }
@@ -1145,7 +1350,8 @@ function renderPrecheckScreen(container) {
       const value = event.target.value.toUpperCase();
       setCurrentFlight("airport", value, { deferPersist: true });
       const hasAirport = Boolean(value.trim());
-      if (continueBtn) continueBtn.disabled = !hasAirport || !state.currentFlight.flight_no;
+      const updatedFlight = getActiveFlight();
+      if (continueBtn) continueBtn.disabled = !hasAirport || !updatedFlight.flight_no;
       const airportError = document.getElementById("precheck-airport-error");
       if (airportError) airportError.style.display = hasAirport ? "none" : airportError.style.display;
       airportInput.classList.toggle("has-error", !hasAirport && airportError?.style.display === "block");
@@ -1154,7 +1360,8 @@ function renderPrecheckScreen(container) {
       const value = event.target.value.toUpperCase().trim();
       setCurrentFlight("airport", value, { persistNow: true });
       const hasAirport = Boolean(value);
-      if (continueBtn) continueBtn.disabled = !hasAirport || !state.currentFlight.flight_no;
+      const updatedFlight = getActiveFlight();
+      if (continueBtn) continueBtn.disabled = !hasAirport || !updatedFlight.flight_no;
       const airportError = document.getElementById("precheck-airport-error");
       if (airportError) airportError.style.display = hasAirport ? "none" : airportError.style.display;
       airportInput.classList.toggle("has-error", !hasAirport && airportError?.style.display === "block");
@@ -1165,6 +1372,9 @@ function renderPrecheckScreen(container) {
 
 
 function renderFlightDetails(container) {
+  const { context } = ensureActiveFlightContext();
+  const activeFlight = context.flight;
+
   const panel = document.createElement("div");
   panel.className = "card";
   panel.id = "flight-panel";
@@ -1184,14 +1394,49 @@ function renderFlightDetails(container) {
 
   panel.appendChild(header);
 
+  const tabBar = document.createElement("div");
+  tabBar.className = "flight-tab-bar";
+  const tabLabel = document.createElement("div");
+  tabLabel.className = "flight-tab-label";
+  tabLabel.textContent = "Gepinnte Flüge";
+  tabBar.appendChild(tabLabel);
+
+  const tabList = document.createElement("div");
+  tabList.className = "flight-tab-list";
+  const pinnedIds = state.pinnedFlights.filter((id) => state.flightContexts[id]);
+  if (!pinnedIds.length) {
+    const empty = document.createElement("span");
+    empty.className = "muted";
+    empty.textContent = "Noch keine Flüge gepinnt.";
+    tabList.appendChild(empty);
+  } else {
+    pinnedIds.forEach((flightId) => {
+      const pinnedContext = state.flightContexts[flightId];
+      if (!pinnedContext) return;
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = `flight-tab-chip${flightId === state.activeFlightId ? " is-active" : ""}`;
+      const directionLabel = pinnedContext.flight.direction
+        ? pinnedContext.flight.direction === "arrival"
+          ? "Arr"
+          : "Dep"
+        : "–";
+      chip.textContent = `${pinnedContext.flight.flight_no || "Unbekannt"} · ${directionLabel}`;
+      chip.addEventListener("click", () => setActiveFlightId(flightId));
+      tabList.appendChild(chip);
+    });
+  }
+  tabBar.appendChild(tabList);
+  panel.appendChild(tabBar);
+
   const summaryRow = document.createElement("div");
   summaryRow.className = "flight-summary-row";
   const summaryText = document.createElement("div");
   summaryText.className = "flight-summary-text";
   const applied = state.lastAppliedFlight;
-  const hasFlight = Boolean(state.currentFlight.flight_no);
+  const hasFlight = Boolean(activeFlight.flight_no);
   summaryText.textContent = hasFlight
-    ? `Aktiv: ${state.currentFlight.flight_no || "n/a"} · ${state.currentFlight.direction || "-"} · ${state.currentFlight.from_airport || "-"} → ${state.currentFlight.to_airport || "-"}`
+    ? `Aktiv: ${activeFlight.flight_no || "n/a"} · ${activeFlight.direction || "-"} · ${activeFlight.from_airport || "-"} → ${activeFlight.to_airport || "-"}`
     : applied
       ? `Zuletzt: ${applied.flight_no || "n/a"} · ${applied.direction || "-"}`
       : "Noch kein Flug gewählt.";
@@ -1237,12 +1482,12 @@ function renderFlightDetails(container) {
     const loadedList = document.createElement("ul");
     loadedList.className = "flight-loaded-list";
     const snapshotItems = [
-      ["Flug", state.currentFlight.flight_no || "-"],
-      ["Direction", state.currentFlight.direction || "-"],
-      ["Route", `${state.currentFlight.from_airport || "-"} → ${state.currentFlight.to_airport || "-"}`],
-      ["Gate/Stand", `Gate ${state.currentFlight.gate || "–"} · Stand ${state.currentFlight.stand || "–"}`],
-      ["Airline", state.currentFlight.airline_code || "-"],
-      ["Aircraft", state.currentFlight.aircraft_type || "-"],
+      ["Flug", activeFlight.flight_no || "-"],
+      ["Direction", activeFlight.direction || "-"],
+      ["Route", `${activeFlight.from_airport || "-"} → ${activeFlight.to_airport || "-"}`],
+      ["Gate/Stand", `Gate ${activeFlight.gate || "–"} · Stand ${activeFlight.stand || "–"}`],
+      ["Airline", activeFlight.airline_code || "-"],
+      ["Aircraft", activeFlight.aircraft_type || "-"],
     ];
     snapshotItems.forEach(([label, value]) => {
       const item = document.createElement("li");
@@ -1260,15 +1505,15 @@ function renderFlightDetails(container) {
     panel.appendChild(loadedBox);
   }
 
-  const showEditor = state.flightDetailsEditable || !state.currentFlight.flight_no;
+  const showEditor = state.flightDetailsEditable || !activeFlight.flight_no;
 
   if (!showEditor && hasFlight) {
     const compact = document.createElement("div");
     compact.className = "flight-compact";
     compact.innerHTML = `
-      <div><strong>Flug:</strong> ${state.currentFlight.flight_no || "-"} (${state.currentFlight.aircraft_type || "Type n/a"})</div>
-      <div><strong>Route:</strong> ${state.currentFlight.from_airport || "-"} → ${state.currentFlight.to_airport || "-"} | Gate ${state.currentFlight.gate || "–"} | Stand ${state.currentFlight.stand || "–"}</div>
-      <div><strong>Direction:</strong> ${state.currentFlight.direction || "–"} | Airport: ${state.currentFlight.airport || "-"}</div>
+      <div><strong>Flug:</strong> ${activeFlight.flight_no || "-"} (${activeFlight.aircraft_type || "Type n/a"})</div>
+      <div><strong>Route:</strong> ${activeFlight.from_airport || "-"} → ${activeFlight.to_airport || "-"} | Gate ${activeFlight.gate || "–"} | Stand ${activeFlight.stand || "–"}</div>
+      <div><strong>Direction:</strong> ${activeFlight.direction || "–"} | Airport: ${activeFlight.airport || "-"}</div>
     `;
     panel.appendChild(compact);
   }
@@ -1333,7 +1578,7 @@ function renderFlightDetails(container) {
       createInputField({
         id: "airport-code",
         label: "Airport (IATA)",
-        value: state.currentFlight.airport,
+        value: activeFlight.airport,
         placeholder: "z.B. MUC",
       })
     );
@@ -1363,7 +1608,7 @@ function renderFlightDetails(container) {
       select.appendChild(opt);
     });
 
-    select.value = state.currentFlight.direction;
+    select.value = activeFlight.direction;
     select.addEventListener("change", (event) => {
       setCurrentFlight("direction", event.target.value);
       renderProcessCards(document.getElementById("app"));
@@ -1376,7 +1621,7 @@ function renderFlightDetails(container) {
       createInputField({
         id: "flight-no",
         label: "Flight-No",
-        value: state.currentFlight.flight_no,
+        value: activeFlight.flight_no,
         placeholder: "z.B. LH123",
       })
     );
@@ -1392,7 +1637,7 @@ function renderFlightDetails(container) {
       createInputField({
         id: "flight-stand",
         label: "Stand",
-        value: state.currentFlight.stand,
+        value: activeFlight.stand,
         placeholder: "z.B. G12",
       })
     );
@@ -1407,7 +1652,7 @@ function renderFlightDetails(container) {
       createInputField({
         id: "flight-gate",
         label: "Gate",
-        value: state.currentFlight.gate,
+        value: activeFlight.gate,
         placeholder: "z.B. K5",
       })
     );
@@ -1442,7 +1687,7 @@ function renderFlightDetails(container) {
       createInputField({
         id: "from-airport",
         label: "From Airport (IATA, optional)",
-        value: state.currentFlight.from_airport,
+        value: activeFlight.from_airport,
         placeholder: "z.B. FRA",
       })
     );
@@ -1451,7 +1696,7 @@ function renderFlightDetails(container) {
       createInputField({
         id: "to-airport",
         label: "To Airport (IATA, optional)",
-        value: state.currentFlight.to_airport,
+        value: activeFlight.to_airport,
         placeholder: "z.B. JFK",
       })
     );
@@ -1478,7 +1723,7 @@ function renderFlightDetails(container) {
       createInputField({
         id: "airline-code",
         label: "Airline-Code (optional)",
-        value: state.currentFlight.airline_code,
+        value: activeFlight.airline_code,
         placeholder: "z.B. LH",
       })
     );
@@ -1494,7 +1739,7 @@ function renderFlightDetails(container) {
       createInputField({
         id: "aircraft-type",
         label: "Aircraft Type (optional)",
-        value: state.currentFlight.aircraft_type,
+        value: activeFlight.aircraft_type,
         placeholder: "z.B. A20N",
       })
     );
@@ -1558,6 +1803,17 @@ function createFlightSuggestionGrid({ compact = false } = {}) {
 
     const actionRow = document.createElement("div");
     actionRow.className = "compact-flight-actions";
+    const pinButton = document.createElement("button");
+    pinButton.className = "btn-neutral btn-small";
+    pinButton.type = "button";
+    const previewContext = buildFlightContext({ flight, flightDate: getDefaultFlightDate() });
+    const isPinned = state.pinnedFlights.includes(previewContext.flightId);
+    pinButton.textContent = isPinned ? "Gepinnt" : "+ Flug pinnen";
+    pinButton.disabled = isPinned;
+    pinButton.addEventListener("click", () => {
+      pinFlightContext(flight);
+    });
+    actionRow.appendChild(pinButton);
     const applyButton = document.createElement("button");
     applyButton.className = "btn-start btn-small";
     applyButton.type = "button";
@@ -1577,6 +1833,7 @@ function createFlightSuggestionGrid({ compact = false } = {}) {
 function renderFlightSuggestions(container) {
   const existing = document.getElementById("flight-suggestions");
   if (existing) existing.remove();
+  const activeFlight = getActiveFlight();
 
   const panel = document.createElement("div");
   panel.className = "card";
@@ -1605,7 +1862,7 @@ function renderFlightSuggestions(container) {
   fetchButton.type = "button";
   const isLoading = state.flightSuggestionStatus === "loading" || state.flightSuggestionStatus === "loading_auto";
   fetchButton.textContent = isLoading ? "Lade..." : "Flüge laden";
-  fetchButton.disabled = !state.currentFlight.airport || isLoading;
+  fetchButton.disabled = !activeFlight.airport || isLoading;
   fetchButton.addEventListener("click", () => fetchFlightSuggestions({ source: "manual" }));
 
   const clearButton = document.createElement("button");
@@ -1646,8 +1903,8 @@ function renderFlightSuggestions(container) {
           ? "Lade automatisch..."
           : state.flightSuggestionStatus === "error"
               ? `Fehler: ${state.flightSuggestionError || "unbekannt"}`
-              : state.currentFlight.airport
-                  ? `Airport ${state.currentFlight.airport} · ±${FLIGHT_TIME_WINDOW_MIN} Min · ${apiSource}`
+              : activeFlight.airport
+                  ? `Airport ${activeFlight.airport} · ±${FLIGHT_TIME_WINDOW_MIN} Min · ${apiSource}`
                   : "Bitte Airport setzen und laden.";
   status.textContent = statusLabel;
   panel.appendChild(status);
@@ -1699,6 +1956,7 @@ function renderFlightSuggestions(container) {
 }
 
 function buildSampleFlights(airport) {
+  const activeFlight = getActiveFlight();
   const now = new Date();
   const makeTimeLabel = (offsetMinutes) => {
     const target = new Date(now.getTime() + offsetMinutes * 60000);
@@ -1707,11 +1965,11 @@ function buildSampleFlights(airport) {
 
   const samples = [
     {
-      flight_no: `${state.currentFlight.airline_code || "LH"}${Math.floor(100 + Math.random() * 800)}`,
+      flight_no: `${activeFlight.airline_code || "LH"}${Math.floor(100 + Math.random() * 800)}`,
       airline: "Beispiel Airline",
-      airline_code: state.currentFlight.airline_code || "LH",
+      airline_code: activeFlight.airline_code || "LH",
       aircraft_type: "A20N",
-      direction: state.currentFlight.direction || "departure",
+      direction: activeFlight.direction || "departure",
       gate: "K5",
       stand: "G12",
       from_airport: airport,
@@ -1866,30 +2124,28 @@ function computeFlightStats(flights) {
 }
 
 function applyFlightSelection(flight) {
-  const flightFields = [
-    ["flight_no", flight.flight_no],
-    ["airline_code", flight.airline_code],
-    ["aircraft_type", flight.aircraft_type],
-    ["direction", flight.direction],
-    ["gate", flight.gate],
-    ["stand", flight.stand],
-    ["from_airport", flight.from_airport],
-    ["to_airport", flight.to_airport],
-    ["airport", flight.airport],
-  ];
-  flightFields.forEach(([field, value]) => {
-    if (value) {
-      setCurrentFlight(field, value);
-    }
-  });
+  const updates = Object.fromEntries(
+    Object.entries({
+      flight_no: flight.flight_no,
+      airline_code: flight.airline_code,
+      aircraft_type: flight.aircraft_type,
+      direction: flight.direction,
+      gate: flight.gate,
+      stand: flight.stand,
+      from_airport: flight.from_airport,
+      to_airport: flight.to_airport,
+      airport: flight.airport,
+    }).filter(([, value]) => value)
+  );
+  updateActiveFlightContext(updates);
 
   state = {
     ...state,
     flightDetailsEditable: false,
     lastAppliedFlight: {
-      flight_no: flight.flight_no || state.currentFlight.flight_no || "",
-      direction: flight.direction || state.currentFlight.direction || "",
-      airport: flight.airport || state.currentFlight.airport || "",
+      flight_no: flight.flight_no || getActiveFlight().flight_no || "",
+      direction: flight.direction || getActiveFlight().direction || "",
+      airport: flight.airport || getActiveFlight().airport || "",
       from_airport: flight.from_airport || "",
       to_airport: flight.to_airport || "",
       gate: flight.gate || "",
@@ -1966,12 +2222,13 @@ function mapRapidApiFlight(entry, direction, airport) {
 
 async function fetchFlightSuggestions(options = {}) {
   const { source = "manual" } = options;
-  if (!state.currentFlight.airport) {
+  const activeFlight = getActiveFlight();
+  if (!activeFlight.airport) {
     setFeedback("Bitte zuerst einen Airport setzen.");
     return;
   }
 
-  const requestUrl = buildAerodataboxRapidUrl(state.currentFlight.airport);
+  const requestUrl = buildAerodataboxRapidUrl(activeFlight.airport);
 
   state = {
     ...state,
@@ -2004,17 +2261,17 @@ async function fetchFlightSuggestions(options = {}) {
   let analysis = "";
 
   if (!hasRapidApiKey) {
-    flights = buildSampleFlights(state.currentFlight.airport);
+    flights = buildSampleFlights(activeFlight.airport);
     sourceLabel = "sample";
     analysis = "Bitte RapidAPI Key setzen, um Live-Flüge zu laden.";
   } else {
     try {
-      flights = await fetchAerodataboxRapid({ airport: state.currentFlight.airport, apiKey: config.apiKey });
+      flights = await fetchAerodataboxRapid({ airport: activeFlight.airport, apiKey: config.apiKey });
       analysis = flights.length
         ? `${flights.length} Flüge über RapidAPI geladen.`
         : "Keine Flüge über RapidAPI gefunden.";
     } catch (error) {
-      flights = buildSampleFlights(state.currentFlight.airport);
+      flights = buildSampleFlights(activeFlight.airport);
       status = "idle";
       errorMessage = "";
       sourceLabel = "sample_fallback";
@@ -2023,7 +2280,7 @@ async function fetchFlightSuggestions(options = {}) {
   }
 
   if (!flights.length) {
-    flights = buildSampleFlights(state.currentFlight.airport);
+    flights = buildSampleFlights(activeFlight.airport);
     sourceLabel = "sample_fallback";
     analysis = analysis ? `${analysis} Samples hinzugefügt.` : "Samples geladen.";
     status = "idle";
@@ -2035,7 +2292,7 @@ async function fetchFlightSuggestions(options = {}) {
 
   if (noFlightsFound && status !== "error") {
     status = "error";
-    errorMessage = `Keine Flüge für ${state.currentFlight.airport} im ±${FLIGHT_TIME_WINDOW_MIN} Min Fenster.`;
+    errorMessage = `Keine Flüge für ${activeFlight.airport} im ±${FLIGHT_TIME_WINDOW_MIN} Min Fenster.`;
     sourceLabel = "api_error";
   }
 
@@ -2116,7 +2373,8 @@ function renderSessionControls(container) {
   const summary = document.createElement("span");
   summary.id = "session-summary";
   summary.className = "muted";
-  summary.textContent = `${state.events.length} Events protokolliert`;
+  const activeContext = getActiveFlightContext();
+  summary.textContent = `${activeContext?.events?.length || 0} Events protokolliert`;
 
   header.appendChild(title);
   header.appendChild(summary);
@@ -2128,7 +2386,7 @@ function renderSessionControls(container) {
   exportButton.id = "export-button";
   exportButton.className = "btn-export";
   exportButton.textContent = "CSV Export";
-  exportButton.disabled = state.events.length === 0;
+  exportButton.disabled = !activeContext?.events?.length;
   exportButton.addEventListener("click", handleExport);
 
   const resetButton = document.createElement("button");
@@ -2151,6 +2409,8 @@ function renderProcessCards(container) {
   if (!container) return;
   const existing = document.getElementById("process-panel");
   if (existing) existing.remove();
+  const activeContext = getActiveFlightContext();
+  const activeFlight = activeContext?.flight || DEFAULT_FLIGHT;
 
   const panel = document.createElement("div");
   panel.className = "card";
@@ -2164,7 +2424,7 @@ function renderProcessCards(container) {
   title.textContent = "Prozesse";
   const helper = document.createElement("p");
   helper.className = "card-hint";
-  const activeDirection = state.currentFlight.direction;
+  const activeDirection = activeFlight.direction;
   helper.textContent = activeDirection
     ? `Prozesse für ${activeDirection === "arrival" ? "Arrival" : "Departure"}`
     : "Start/Ende je Prozess";
@@ -2176,8 +2436,8 @@ function renderProcessCards(container) {
   const list = document.createElement("div");
   list.className = "process-list";
 
-  const visibleProcesses = state.currentFlight.direction
-    ? PROCESS_CODES.filter((process) => process.directions?.includes(state.currentFlight.direction))
+  const visibleProcesses = activeFlight.direction
+    ? PROCESS_CODES.filter((process) => process.directions?.includes(activeFlight.direction))
     : PROCESS_CODES;
 
   if (!visibleProcesses.length) {
@@ -2190,7 +2450,7 @@ function renderProcessCards(container) {
       const card = document.createElement("div");
       card.className = "process-card";
 
-      const isActive = Boolean(state.activeProcesses?.[process.code]);
+      const isActive = Boolean(activeContext?.activeProcesses?.[process.code]);
       if (isActive) {
         card.classList.add("is-active");
       }
@@ -2235,7 +2495,7 @@ function renderProcessCards(container) {
       if (isActive) {
         const indicator = document.createElement("div");
         indicator.className = "process-indicator";
-        const since = state.activeProcesses[process.code]?.startedAt || state.activeProcesses[process.code];
+        const since = activeContext?.activeProcesses?.[process.code]?.startedAt || activeContext?.activeProcesses?.[process.code];
         const sinceLabel = since ? new Date(since).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
         indicator.innerHTML = `<span class=\"pill running-pill\">Läuft${sinceLabel ? ` seit ${sinceLabel}` : ""}</span>`;
         card.appendChild(indicator);
@@ -2262,6 +2522,7 @@ function renderProcessCards(container) {
 function renderProcessVisualization() {
   const app = document.getElementById("app");
   if (!app) return;
+  const activeContext = getActiveFlightContext();
 
   const existing = document.getElementById("process-visualization");
   if (existing) existing.remove();
@@ -2294,7 +2555,7 @@ function renderProcessVisualization() {
   const activeRow = document.createElement("div");
   activeRow.className = "token-row";
 
-  const activeEntries = Object.entries(state.activeProcesses || {}).sort(
+  const activeEntries = Object.entries(activeContext?.activeProcesses || {}).sort(
     ([_a, left], [_b, right]) => new Date(left?.startedAt || 0) - new Date(right?.startedAt || 0)
   );
 
@@ -2333,13 +2594,13 @@ function renderProcessVisualization() {
   const completedRow = document.createElement("div");
   completedRow.className = "token-row token-row-completed";
 
-  if (!state.completedProcesses.length) {
+  if (!activeContext?.completedProcesses?.length) {
     const placeholder = document.createElement("div");
     placeholder.className = "lane-placeholder";
     placeholder.textContent = "Noch keine abgeschlossenen Prozesse";
     completedRow.appendChild(placeholder);
   } else {
-    state.completedProcesses.slice(0, 10).forEach((entry) => {
+    activeContext.completedProcesses.slice(0, 10).forEach((entry) => {
       const isNew = Date.now() - entry.completedAt < 7000;
       const token = document.createElement("div");
       token.className = `process-token is-complete${isNew ? " is-new" : ""}`;
@@ -2424,11 +2685,15 @@ function renderStartScreen(container) {
 }
 
 function handleStart() {
-  const defaultAirport = state.currentFlight.airport || "MUC";
+  const activeFlight = getActiveFlight();
+  const defaultAirport = activeFlight.airport || "MUC";
+  const initialContext = buildFlightContext({ flight: { ...DEFAULT_FLIGHT, airport: defaultAirport } });
   state = {
     ...state,
     started: true,
-    currentFlight: { ...DEFAULT_STATE.currentFlight, airport: defaultAirport },
+    flightContexts: { [initialContext.flightId]: initialContext },
+    pinnedFlights: [],
+    activeFlightId: initialContext.flightId,
     flightSuggestions: [],
     flightSuggestionStatus: "idle",
     flightSuggestionError: "",
@@ -2452,6 +2717,7 @@ function renderApp() {
     return;
   }
 
+  ensureActiveFlightContext();
   applyStartMode(false);
   app.innerHTML = "";
   if (!state.precheckCompleted) {
@@ -2471,19 +2737,21 @@ function renderStatusRail(container) {
   const existing = document.getElementById("status-rail");
   if (existing) existing.remove();
 
+  const activeContext = getActiveFlightContext();
+  const activeFlight = activeContext?.flight || DEFAULT_FLIGHT;
   const rail = document.createElement("div");
   rail.id = "status-rail";
   rail.className = "status-rail card";
 
-  const activeCount = Object.keys(state.activeProcesses || {}).length;
-  const completedCount = state.completedProcesses?.length || 0;
+  const activeCount = Object.keys(activeContext?.activeProcesses || {}).length;
+  const completedCount = activeContext?.completedProcesses?.length || 0;
 
   const items = [
     {
       label: "Flug",
-      value: state.currentFlight.flight_no || "nicht gesetzt",
-      hint: state.currentFlight.direction
-        ? state.currentFlight.direction === "arrival"
+      value: activeFlight.flight_no || "nicht gesetzt",
+      hint: activeFlight.direction
+        ? activeFlight.direction === "arrival"
           ? "Arrival"
           : "Departure"
         : "Bitte Richtung wählen",
@@ -2500,7 +2768,7 @@ function renderStatusRail(container) {
     },
     {
       label: "Events",
-      value: state.events.length,
+      value: activeContext?.events?.length || 0,
       hint: "Session-Einträge",
     },
   ];
@@ -2568,7 +2836,8 @@ function populateLog() {
   const list = document.getElementById("log-list");
   if (!list) return;
   list.innerHTML = "";
-  [...state.events].reverse().forEach((event) => {
+  const activeContext = getActiveFlightContext();
+  [...(activeContext?.events || [])].reverse().forEach((event) => {
     const item = document.createElement("li");
     item.textContent = formatEventMessage(event);
     list.appendChild(item);
@@ -2577,15 +2846,17 @@ function populateLog() {
 
 function updateSessionSummary() {
   const summary = document.getElementById("session-summary");
+  const activeContext = getActiveFlightContext();
   if (summary) {
-    const activeSession = state.events.length > 0 || state.currentFlight.flight_no || state.currentFlight.direction;
+    const activeFlight = getActiveFlight();
+    const activeSession = (activeContext?.events?.length || 0) > 0 || activeFlight.flight_no || activeFlight.direction;
     const suffix = activeSession ? " – gespeicherte Session aktiv" : "";
-    summary.textContent = `${state.events.length} Events protokolliert${suffix}`;
+    summary.textContent = `${activeContext?.events?.length || 0} Events protokolliert${suffix}`;
   }
 
   const exportButton = document.getElementById("export-button");
   if (exportButton) {
-    exportButton.disabled = state.events.length === 0;
+    exportButton.disabled = !(activeContext?.events?.length > 0);
   }
 }
 
@@ -2657,7 +2928,8 @@ function toCsv() {
     return stringValue;
   };
 
-  const rows = state.events.map((event) => header.map((key) => escapeValue(event[key])));
+  const activeContext = getActiveFlightContext();
+  const rows = (activeContext?.events || []).map((event) => header.map((key) => escapeValue(event[key])));
   return [header.join(","), ...rows.map((row) => row.join(","))].join("\n");
 }
 
@@ -2691,7 +2963,8 @@ function resetSession() {
 }
 
 function handleExport() {
-  if (!state.events.length) return;
+  const activeContext = getActiveFlightContext();
+  if (!activeContext?.events?.length) return;
   const filename = downloadCsv();
   setFeedback(`CSV exportiert: ${filename}`);
   const shouldReset = window.confirm("Session löschen?");
@@ -2702,6 +2975,9 @@ function handleExport() {
 
 document.addEventListener("DOMContentLoaded", () => {
   state = loadState();
+  if (state.started) {
+    ensureActiveFlightContext();
+  }
   renderApp();
   populateLog();
   updateSessionSummary();
