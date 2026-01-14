@@ -555,6 +555,46 @@ button:focus-visible {
   box-shadow: 0 6px 14px rgba(148, 163, 184, 0.25);
 }
 
+.flight-tab-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.flight-tab-label {
+  font-weight: 700;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.flight-tab-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.flight-tab-chip {
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  background: #e2e8f0;
+  color: #0f172a;
+  font-weight: 700;
+  font-size: 0.9rem;
+  border: 1px solid transparent;
+}
+
+.flight-tab-chip.is-active {
+  background: #0f172a;
+  color: #f8fafc;
+  border-color: #0f172a;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.2);
+}
+
 .flight-summary-row {
   display: flex;
   align-items: center;
