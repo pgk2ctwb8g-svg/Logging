@@ -57,6 +57,7 @@ const DEFAULT_STATE = {
   flightPickerOpen: false,
   flightDetailsEditable: false,
   lastAppliedFlight: null,
+  endConfirmation: null,
   flightContexts: {},
   pinnedFlights: [],
   activeFlightId: "",
@@ -314,7 +315,7 @@ function updateActiveFlightContext(flightUpdates, options = {}) {
 
 function setActiveFlightId(flightId) {
   if (!flightId || !state.flightContexts?.[flightId]) return;
-  state = { ...state, activeFlightId: flightId };
+  state = { ...state, activeFlightId: flightId, endConfirmation: null };
   persistState();
   renderApp();
 }
@@ -1100,8 +1101,8 @@ function buildEvent(eventPayload, eventTimestamp) {
   return event;
 }
 
-function isDuplicateEvent(fingerprint) {
-  const activeContext = getActiveFlightContext();
+function isDuplicateEvent(fingerprint, context) {
+  const activeContext = context || getActiveFlightContext();
   return activeContext?.events?.some((existing) => existing.instance_fingerprint === fingerprint);
 }
 
@@ -1109,16 +1110,16 @@ function addEvent(eventPayload) {
   const validation = validateEventPayload(eventPayload);
   if (!validation.valid) return false;
 
+  const { id: activeId, context } = ensureActiveFlightContext();
   const now = new Date();
   const eventTimestamp = eventPayload.event_timestamp || now.toISOString();
   const event = buildEvent(eventPayload, eventTimestamp);
 
-  if (isDuplicateEvent(event.instance_fingerprint)) {
+  if (isDuplicateEvent(event.instance_fingerprint, context)) {
     setFeedback("Event bereits protokolliert – kein erneuter Log.");
     return false;
   }
 
-  const { id: activeId, context } = ensureActiveFlightContext();
   state = {
     ...state,
     flightContexts: {
@@ -2449,7 +2450,7 @@ function renderProcessCards(container) {
   if (!container) return;
   const existing = document.getElementById("process-panel");
   if (existing) existing.remove();
-  const activeContext = getActiveFlightContext();
+  const { id: activeId, context: activeContext } = ensureActiveFlightContext();
   const activeFlight = activeContext?.flight || DEFAULT_FLIGHT;
 
   const panel = document.createElement("div");
@@ -2572,12 +2573,34 @@ function renderProcessCards(container) {
 
       const instanceButton = document.createElement("button");
       instanceButton.className = "btn-neutral";
-      instanceButton.textContent = "Instanz dokumentieren";
+      instanceButton.textContent = "Sub-Task hinzufügen";
+      instanceButton.title = "Speichert eine zusätzliche Instanz für diesen Prozess im aktiven Flug (Flugdaten + Prozessdaten).";
       instanceButton.addEventListener("click", () => handleAction(process, "instance"));
 
       actions.appendChild(startButton);
       actions.appendChild(endButton);
       actions.appendChild(instanceButton);
+
+      const showEndConfirmation =
+        state.endConfirmation?.flightId === activeId && state.endConfirmation?.processCode === process.code;
+      if (showEndConfirmation) {
+        const confirmRow = document.createElement("div");
+        confirmRow.className = "process-inline-confirm";
+
+        const confirmLabel = document.createElement("span");
+        confirmLabel.className = "process-inline-confirm-label";
+        const flightLabel = activeFlight.flight_no || "aktuellen Flug";
+        confirmLabel.textContent = `Ende ${process.code} für ${flightLabel}?`;
+
+        const confirmButton = document.createElement("button");
+        confirmButton.className = "btn-end";
+        confirmButton.textContent = "Ja, beenden";
+        confirmButton.addEventListener("click", () => handleAction(process, "end"));
+
+        confirmRow.appendChild(confirmLabel);
+        confirmRow.appendChild(confirmButton);
+        card.appendChild(confirmRow);
+      }
 
       if (isActive) {
         const indicator = document.createElement("div");
@@ -3011,6 +3034,22 @@ function updateSessionSummary() {
 }
 
 function handleAction(process, action) {
+  const { id: activeId } = ensureActiveFlightContext();
+  if (action !== "end" && state.endConfirmation) {
+    state = { ...state, endConfirmation: null };
+  }
+
+  if (action === "end") {
+    const pending = state.endConfirmation;
+    if (!pending || pending.processCode !== process.code || pending.flightId !== activeId) {
+      state = { ...state, endConfirmation: { processCode: process.code, flightId: activeId } };
+      const app = document.getElementById("app");
+      if (app) renderProcessCards(app);
+      return;
+    }
+    state = { ...state, endConfirmation: null };
+  }
+
   const values = getSelectedValues();
   const event = addEvent({
     process_code: process.code,
@@ -3025,6 +3064,9 @@ function handleAction(process, action) {
     setActiveProcess(process.code, event.start_time_abs);
   } else if (action === "end") {
     clearActiveProcess(process.code, event.end_time_abs);
+  } else if (action === "instance") {
+    const flightLabel = getActiveFlight().flight_no || "aktuellen Flug";
+    setFeedback(`Sub-Task gespeichert (zusätzliche Instanz für ${process.code} im ${flightLabel}).`);
   }
 }
 
