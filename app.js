@@ -25,15 +25,15 @@ function buildAerodataboxRapidUrl(airportCode) {
   }
 
   const params = new URLSearchParams({
-    offsetMinutes: "-30",
-    durationMinutes: String(FLIGHT_TIME_WINDOW_MIN * 2),
+    offsetMinutes: "-15",
+    durationMinutes: "30",
     withLeg: "true",
     direction: "Both",
     withCancelled: "false",
     withCodeshared: "true",
     withCargo: "false",
     withPrivate: "false",
-    withLocation: "false",
+    withLocation: "true",
   });
 
   return `${AERODATABOX_RAPID_BASE_URL}/flights/airports/iata/${airport}?${params.toString()}`;
