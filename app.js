@@ -2609,7 +2609,40 @@ function renderProcessCards(container) {
 function renderProcessVisualization() {
   const app = document.getElementById("app");
   if (!app) return;
-  const activeContext = getActiveFlightContext();
+  const sortedContexts = Object.entries(state.flightContexts || {}).sort(([leftId, left], [rightId, right]) => {
+    if (leftId === state.activeFlightId) return -1;
+    if (rightId === state.activeFlightId) return 1;
+    const leftFlight = left?.flight?.flight_no || "";
+    const rightFlight = right?.flight?.flight_no || "";
+    return leftFlight.localeCompare(rightFlight, "de");
+  });
+
+  const formatFlightLabel = (context) => {
+    const flightNo = context?.flight?.flight_no || "Unbekannter Flug";
+    const direction = context?.flight?.direction || "";
+    const directionLabel =
+      direction === "arrival" ? "Ankunft" : direction === "departure" ? "Abflug" : direction || "";
+    const airport = context?.flight?.airport || "";
+    const details = [directionLabel, airport].filter(Boolean).join(" · ");
+    return details ? `${flightNo} · ${details}` : flightNo;
+  };
+
+  const createFlightGroup = ({ context, flightId, rowClassName }) => {
+    const group = document.createElement("div");
+    group.className = `process-viz-group${flightId === state.activeFlightId ? " is-active" : ""}`;
+
+    const title = document.createElement("div");
+    title.className = "process-viz-group-title";
+    title.textContent = formatFlightLabel(context);
+
+    const row = document.createElement("div");
+    row.className = rowClassName;
+
+    group.appendChild(title);
+    group.appendChild(row);
+
+    return { group, row };
+  };
 
   const existing = document.getElementById("process-visualization");
   if (existing) existing.remove();
@@ -2640,35 +2673,46 @@ function renderProcessVisualization() {
   activeLane.className = "process-viz-lane";
   activeLane.innerHTML = `<div class="lane-title">Laufend</div>`;
   const activeRow = document.createElement("div");
-  activeRow.className = "token-row";
+  activeRow.className = "token-row token-row-grouped";
 
-  const activeEntries = Object.entries(activeContext?.activeProcesses || {}).sort(
-    ([_a, left], [_b, right]) => new Date(left?.startedAt || 0) - new Date(right?.startedAt || 0)
-  );
+  const activeGroups = sortedContexts
+    .map(([flightId, context]) => {
+      const activeEntries = Object.entries(context?.activeProcesses || {}).sort(
+        ([_a, left], [_b, right]) => new Date(left?.startedAt || 0) - new Date(right?.startedAt || 0)
+      );
+      return { flightId, context, activeEntries };
+    })
+    .filter((group) => group.activeEntries.length);
 
-  if (!activeEntries.length) {
+  if (!activeGroups.length) {
     const placeholder = document.createElement("div");
     placeholder.className = "lane-placeholder";
     placeholder.textContent = "Keine aktiven Prozesse";
     activeRow.appendChild(placeholder);
   } else {
-    activeEntries.forEach(([code, meta]) => {
-      const token = document.createElement("div");
-      token.className = "process-token is-active";
-      const startedLabel = meta?.startedAt
-        ? new Date(meta.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-        : "";
-      token.innerHTML = `
-        <div class="process-icon">
-          <span class="process-icon-dot"></span>
-        </div>
-        <div class="process-token-body">
-          <div class="token-title">${code}</div>
-          <div class="token-subtitle">${meta?.label || "Aktiver Prozess"}</div>
-          <div class="token-meta">${startedLabel ? `seit ${startedLabel}` : ""}</div>
-        </div>
-      `;
-      activeRow.appendChild(token);
+    activeGroups.forEach(({ flightId, context, activeEntries }) => {
+      const { group, row } = createFlightGroup({ context, flightId, rowClassName: "token-row" });
+
+      activeEntries.forEach(([code, meta]) => {
+        const token = document.createElement("div");
+        token.className = "process-token is-active";
+        const startedLabel = meta?.startedAt
+          ? new Date(meta.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+          : "";
+        token.innerHTML = `
+          <div class="process-icon">
+            <span class="process-icon-dot"></span>
+          </div>
+          <div class="process-token-body">
+            <div class="token-title">${code}</div>
+            <div class="token-subtitle">${meta?.label || "Aktiver Prozess"}</div>
+            <div class="token-meta">${startedLabel ? `seit ${startedLabel}` : ""}</div>
+          </div>
+        `;
+        row.appendChild(token);
+      });
+
+      activeRow.appendChild(group);
     });
   }
 
@@ -2679,32 +2723,51 @@ function renderProcessVisualization() {
   completedLane.className = "process-viz-lane";
   completedLane.innerHTML = `<div class="lane-title">Abgeschlossen</div>`;
   const completedRow = document.createElement("div");
-  completedRow.className = "token-row token-row-completed";
+  completedRow.className = "token-row token-row-completed token-row-grouped";
 
-  if (!activeContext?.completedProcesses?.length) {
+  const completedGroups = sortedContexts
+    .map(([flightId, context]) => {
+      const completedEntries = Array.isArray(context?.completedProcesses)
+        ? context.completedProcesses.slice(0, 10)
+        : [];
+      return { flightId, context, completedEntries };
+    })
+    .filter((group) => group.completedEntries.length);
+
+  if (!completedGroups.length) {
     const placeholder = document.createElement("div");
     placeholder.className = "lane-placeholder";
     placeholder.textContent = "Noch keine abgeschlossenen Prozesse";
     completedRow.appendChild(placeholder);
   } else {
-    activeContext.completedProcesses.slice(0, 10).forEach((entry) => {
-      const isNew = Date.now() - entry.completedAt < 7000;
-      const token = document.createElement("div");
-      token.className = `process-token is-complete${isNew ? " is-new" : ""}`;
-      const endedLabel = entry?.endedAt
-        ? new Date(entry.endedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-        : "";
-      token.innerHTML = `
-        <div class="process-icon complete-icon">
-          <span class="process-icon-check">✓</span>
-        </div>
-        <div class="process-token-body">
-          <div class="token-title">${entry.code}</div>
-          <div class="token-subtitle">${entry.label || "Prozess abgeschlossen"}</div>
-          <div class="token-meta">${endedLabel ? `beendet um ${endedLabel}` : ""}${entry.durationMin ? ` · ${entry.durationMin} min` : ""}</div>
-        </div>
-      `;
-      completedRow.appendChild(token);
+    completedGroups.forEach(({ flightId, context, completedEntries }) => {
+      const { group, row } = createFlightGroup({
+        context,
+        flightId,
+        rowClassName: "token-row token-row-completed",
+      });
+
+      completedEntries.forEach((entry) => {
+        const isNew = Date.now() - entry.completedAt < 7000;
+        const token = document.createElement("div");
+        token.className = `process-token is-complete${isNew ? " is-new" : ""}`;
+        const endedLabel = entry?.endedAt
+          ? new Date(entry.endedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+          : "";
+        token.innerHTML = `
+          <div class="process-icon complete-icon">
+            <span class="process-icon-check">✓</span>
+          </div>
+          <div class="process-token-body">
+            <div class="token-title">${entry.code}</div>
+            <div class="token-subtitle">${entry.label || "Prozess abgeschlossen"}</div>
+            <div class="token-meta">${endedLabel ? `beendet um ${endedLabel}` : ""}${entry.durationMin ? ` · ${entry.durationMin} min` : ""}</div>
+          </div>
+        `;
+        row.appendChild(token);
+      });
+
+      completedRow.appendChild(group);
     });
   }
 
