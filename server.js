@@ -382,7 +382,7 @@ async function fetchAerodatabox({ airport, direction, start, end }) {
     withPrivate: "false",
     withCancelled: "false",
     withCodeshared: "true",
-    withLocation: "false",
+    withLocation: "true",
   });
 
   const url = `${AERODATABOX_BASE_URL}/flights/airports/${codeType}/${airport}/${fromIso}/${toIso}?${params.toString()}`;
