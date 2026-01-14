@@ -1904,11 +1904,7 @@ function createFlightSuggestionGrid({ compact = false } = {}) {
 
     const actionRow = document.createElement("div");
     actionRow.className = "compact-flight-actions";
-    const pinButton = document.createElement("button");
-    pinButton.className = "btn-neutral btn-small";
-    pinButton.type = "button";
     const previewContext = buildFlightContext({ flight, flightDate: getDefaultFlightDate() });
-    const isPinned = state.pinnedFlights.includes(previewContext.flightId);
     const isActive = previewContext.flightId === state.activeFlightId;
     if (isActive) {
       card.classList.add("is-active");
@@ -1917,16 +1913,6 @@ function createFlightSuggestionGrid({ compact = false } = {}) {
       activeBadge.textContent = "Aktiv";
       heading.appendChild(activeBadge);
     }
-    pinButton.textContent = isPinned ? (isActive ? "Aktiv" : "Set active") : "Pin & set active";
-    pinButton.disabled = isActive;
-    pinButton.addEventListener("click", () => {
-      if (isPinned) {
-        setActiveFlightId(previewContext.flightId);
-      } else {
-        pinFlightContext(flight);
-      }
-    });
-    actionRow.appendChild(pinButton);
     const applyButton = document.createElement("button");
     applyButton.className = "btn-start btn-small";
     applyButton.type = "button";
