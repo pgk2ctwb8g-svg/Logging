@@ -2559,6 +2559,24 @@ function renderProcessCards(container) {
   if (existing) existing.remove();
   const { id: activeId, context: activeContext } = ensureActiveFlightContext();
   const activeFlight = activeContext?.flight || DEFAULT_FLIGHT;
+  const flightNumberLabel = activeFlight.flight_no || "Flug";
+  const directionLabel = activeFlight.direction ? (activeFlight.direction === "arrival" ? "ARR" : "DEP") : "–";
+  const gateLabel = activeFlight.gate ? `Gate ${activeFlight.gate}` : "Gate –";
+  const standLabel = activeFlight.stand ? `Stand ${activeFlight.stand}` : "Stand –";
+  const gateStand = `${gateLabel} / ${standLabel}`;
+  const aircraftLabel = activeFlight.aircraft_type ? activeFlight.aircraft_type : "Typ –";
+  const routeLabel = (() => {
+    if (!activeFlight.direction) {
+      if (activeFlight.from_airport || activeFlight.to_airport) {
+        return `${activeFlight.from_airport || "–"} → ${activeFlight.to_airport || "–"}`;
+      }
+      return "";
+    }
+    if (activeFlight.direction === "arrival") {
+      return `${activeFlight.from_airport || "–"} → ${activeFlight.airport || "–"}`;
+    }
+    return `${activeFlight.airport || "–"} → ${activeFlight.to_airport || "–"}`;
+  })();
 
   const panel = document.createElement("div");
   panel.className = "card";
@@ -2590,12 +2608,6 @@ function renderProcessCards(container) {
   const contextTitle = document.createElement("span");
   contextTitle.className = "process-context-title";
   contextTitle.textContent = "Aktiver Flug";
-  const directionLabel = activeFlight.direction ? (activeFlight.direction === "arrival" ? "ARR" : "DEP") : "–";
-  const gateStand = [
-    activeFlight.gate ? `Gate ${activeFlight.gate}` : "Gate –",
-    activeFlight.stand ? `Stand ${activeFlight.stand}` : "Stand –",
-  ].join(" / ");
-  const aircraftLabel = activeFlight.aircraft_type ? activeFlight.aircraft_type : "Typ –";
   const contextValue = document.createElement("span");
   contextValue.className = "process-context-value";
   contextValue.textContent = `${activeFlight.flight_no || "nicht gesetzt"} · ${directionLabel} · ${gateStand} · ${aircraftLabel}`;
@@ -2627,6 +2639,23 @@ function renderProcessCards(container) {
   }
 
   panel.appendChild(contextHeader);
+
+  const banner = document.createElement("div");
+  banner.className = "process-context-banner";
+  const bannerMain = document.createElement("div");
+  bannerMain.className = "process-context-banner-main";
+  const bannerDot = createFlightColorDot(getFlightColor(activeFlight), "is-small");
+  const bannerLabel = document.createElement("span");
+  bannerLabel.className = "process-context-banner-label";
+  bannerLabel.textContent = "Aktiver Flug";
+  const bannerValue = document.createElement("span");
+  bannerValue.className = "process-context-banner-value";
+  bannerValue.textContent = `${flightNumberLabel} · ${directionLabel} · ${gateStand} · ${aircraftLabel}`;
+  bannerMain.appendChild(bannerDot);
+  bannerMain.appendChild(bannerLabel);
+  bannerMain.appendChild(bannerValue);
+  banner.appendChild(bannerMain);
+  panel.appendChild(banner);
 
   const list = document.createElement("div");
   list.className = "process-list";
@@ -2668,13 +2697,27 @@ function renderProcessCards(container) {
 
       const startButton = document.createElement("button");
       startButton.className = "btn-start";
-      startButton.textContent = "Start";
+      startButton.innerHTML = "";
+      const startLabel = document.createElement("span");
+      startLabel.textContent = `Start ${process.label}`;
+      const startFlight = document.createElement("span");
+      startFlight.className = "process-action-flight";
+      startFlight.textContent = `(${flightNumberLabel})`;
+      startButton.appendChild(startLabel);
+      startButton.appendChild(startFlight);
       startButton.disabled = isActive;
       startButton.addEventListener("click", () => handleAction(process, "start"));
 
       const endButton = document.createElement("button");
       endButton.className = "btn-end";
-      endButton.textContent = "Ende";
+      endButton.innerHTML = "";
+      const endLabel = document.createElement("span");
+      endLabel.textContent = "Ende";
+      const endFlight = document.createElement("span");
+      endFlight.className = "process-action-flight";
+      endFlight.textContent = `(${flightNumberLabel})`;
+      endButton.appendChild(endLabel);
+      endButton.appendChild(endFlight);
       endButton.disabled = !isActive;
       endButton.addEventListener("click", () => handleAction(process, "end"));
 
@@ -2697,7 +2740,11 @@ function renderProcessCards(container) {
         const confirmLabel = document.createElement("span");
         confirmLabel.className = "process-inline-confirm-label";
         const flightLabel = activeFlight.flight_no || "aktuellen Flug";
-        confirmLabel.textContent = `Ende ${process.code} für ${flightLabel}?`;
+        const confirmDetails = [];
+        if (routeLabel) confirmDetails.push(routeLabel);
+        if (activeFlight.gate || activeFlight.stand) confirmDetails.push(gateStand);
+        const confirmSuffix = confirmDetails.length ? ` (${confirmDetails.join(" · ")})` : "";
+        confirmLabel.textContent = `Ende ${process.code} für ${flightLabel}${confirmSuffix}?`;
 
         const confirmButton = document.createElement("button");
         confirmButton.className = "btn-end";
